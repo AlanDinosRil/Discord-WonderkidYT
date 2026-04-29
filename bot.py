@@ -204,31 +204,16 @@ async def cmd_daftar(ctx, *, args: str = ""):
     embed.set_footer(text="Campaign Clipper System")
     await ctx.reply(embed=embed)
 
-    # Kirim notifikasi ke channel approval
-    approval_ch_id = db["settings"].get("approval_channel_id", 0)
-    if approval_ch_id:
-        ch = ctx.guild.get_channel(approval_ch_id)
-        if ch:
-            notif_embed = discord.Embed(
-                title="Pendaftaran Clipper Baru",
-                description=(
-                    f"**User:** {ctx.author.mention}\n"
-                    f"**Akun Baru:** @{username} ({platform.title()})\n\n"
-                    f"**Semua akun pending:**\n{accounts_list}\n\n"
-                    f"Gunakan `/approve @user` untuk menyetujui atau `/reject @user` untuk menolak."
-                ),
-                color=0x5865F2,
-                timestamp=datetime.now(timezone.utc)
-            )
-            notif_embed.set_thumbnail(url=ctx.author.display_avatar.url)
-            try:
-                await ch.send(embed=notif_embed)
-            except Exception:
-                pass
-
+    # Kirim notifikasi ke log_channel (channel admin)
     await send_log(ctx.guild, db, embed=discord.Embed(
-        title="Pendaftaran Clipper Baru (Pending)",
-        description=f"{ctx.author.mention} mendaftar dengan akun @{username} ({platform.title()})",
+        title="Pendaftaran Clipper Baru",
+        description=(
+            f"**User:** {ctx.author.mention}\n"
+            f"**User ID:** {ctx.author.id}\n"
+            f"**Akun Baru:** @{username} ({platform.title()})\n\n"
+            f"**Semua akun pending:**\n{accounts_list}\n\n"
+            f"Gunakan `/approve @user` untuk menyetujui atau `/reject @user` untuk menolak."
+        ),
         color=0x5865F2,
         timestamp=datetime.now(timezone.utc)
     ))
@@ -315,27 +300,21 @@ async def add_account(interaction: discord.Interaction, platform: str, username:
     )
     await interaction.response.send_message(embed=embed)
     
-    # Notifikasi ke channel approval
-    approval_ch_id = db["settings"].get("approval_channel_id", 0)
-    if approval_ch_id:
-        ch = interaction.guild.get_channel(approval_ch_id)
-        if ch:
-            already_clipper = "Ya" if clipper else "Belum"
-            notif_embed = discord.Embed(
-                title="Permintaan Tambah Akun",
-                description=(
-                    f"**User:** {interaction.user.mention}\n"
-                    f"**Sudah Clipper:** {already_clipper}\n"
-                    f"**Akun Baru:** @{username} ({platform.title()})\n\n"
-                    f"**Semua akun pending:**\n{accounts_list}"
-                ),
-                color=0x5865F2,
-                timestamp=datetime.now(timezone.utc)
-            )
-            try:
-                await ch.send(embed=notif_embed)
-            except Exception:
-                pass
+    # Notifikasi ke log_channel (channel admin)
+    already_clipper = "Ya" if clipper else "Belum"
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="Permintaan Tambah Akun",
+        description=(
+            f"**User:** {interaction.user.mention}\n"
+            f"**User ID:** {interaction.user.id}\n"
+            f"**Sudah Clipper:** {already_clipper}\n"
+            f"**Akun Baru:** @{username} ({platform.title()})\n\n"
+            f"**Semua akun pending:**\n{accounts_list}\n\n"
+            f"Gunakan `/approve @user` untuk menyetujui."
+        ),
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc)
+    ))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN — Approve & Reject Registration
@@ -378,8 +357,9 @@ async def approve_cmd(interaction: discord.Interaction, member: discord.Member):
     
     accounts_list = format_accounts_list(clipper.get("accounts", []))
     
-    embed = discord.Embed(
-        title="Clipper Disetujui!",
+    # Response ephemeral untuk admin
+    admin_embed = discord.Embed(
+        title="Clipper Berhasil Disetujui!",
         description=(
             f"**User:** {member.mention}\n\n"
             f"**Akun Terdaftar:**\n{accounts_list}\n"
@@ -388,8 +368,29 @@ async def approve_cmd(interaction: discord.Interaction, member: discord.Member):
         color=0x57F287,
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_footer(text=f"Approved by {interaction.user.display_name}")
-    await interaction.response.send_message(embed=embed)
+    admin_embed.set_footer(text=f"Approved by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=admin_embed, ephemeral=True)
+    
+    # Announce di channel utama clipper
+    clipper_ch_id = db["settings"].get("clipper_channel_id", 0)
+    if clipper_ch_id:
+        clipper_ch = interaction.guild.get_channel(clipper_ch_id)
+        if clipper_ch:
+            announce_embed = discord.Embed(
+                title="Selamat Datang Clipper Baru!",
+                description=(
+                    f"Selamat! {member.mention} resmi bergabung sebagai **Clipper**!\n\n"
+                    f"**Akun:**\n{accounts_list}\n\n"
+                    f"Selamat berkarya!"
+                ),
+                color=0x57F287,
+                timestamp=datetime.now(timezone.utc)
+            )
+            announce_embed.set_thumbnail(url=member.display_avatar.url)
+            try:
+                await clipper_ch.send(embed=announce_embed)
+            except Exception:
+                pass
     
     # DM to clipper
     try:
@@ -406,9 +407,10 @@ async def approve_cmd(interaction: discord.Interaction, member: discord.Member):
     except Exception:
         pass
     
+    # Log ke log_channel
     await send_log(interaction.guild, db, embed=discord.Embed(
         title="Clipper Approved",
-        description=f"{member.mention} disetujui oleh {interaction.user.mention}",
+        description=f"{member.mention} disetujui oleh {interaction.user.mention}\n\n**Akun:**\n{accounts_list}",
         color=0x57F287,
         timestamp=datetime.now(timezone.utc)
     ))
@@ -431,6 +433,7 @@ async def reject_cmd(interaction: discord.Interaction, member: discord.Member, a
     
     rejected = reject_registration(db, did, alasan)
     
+    # Response ephemeral untuk admin
     embed = discord.Embed(
         title="Pendaftaran Ditolak",
         description=(
@@ -441,7 +444,7 @@ async def reject_cmd(interaction: discord.Interaction, member: discord.Member, a
         timestamp=datetime.now(timezone.utc)
     )
     embed.set_footer(text=f"Rejected by {interaction.user.display_name}")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
     
     # DM to user
     try:
@@ -453,6 +456,14 @@ async def reject_cmd(interaction: discord.Interaction, member: discord.Member, a
         await member.send(embed=dm_embed)
     except Exception:
         pass
+    
+    # Log ke log_channel
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="Pendaftaran Ditolak",
+        description=f"{member.mention} ditolak oleh {interaction.user.mention}\n\n**Alasan:** {alasan}",
+        color=0xED4245,
+        timestamp=datetime.now(timezone.utc)
+    ))
 
 @bot.tree.command(name="pending", description="[ADMIN] Lihat semua pendaftaran yang pending")
 async def pending_cmd(interaction: discord.Interaction):
@@ -468,7 +479,8 @@ async def pending_cmd(interaction: discord.Interaction):
                 title="Pendaftaran Pending",
                 description="Tidak ada pendaftaran yang menunggu approval.",
                 color=0x5865F2
-            )
+            ),
+            ephemeral=True
         )
     
     embed = discord.Embed(
@@ -492,7 +504,7 @@ async def pending_cmd(interaction: discord.Interaction):
         )
     
     embed.set_footer(text="Gunakan /approve atau /reject untuk memproses")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FITUR 2 — /submit dengan verifikasi multi-akun
@@ -595,7 +607,7 @@ async def submit_clip(interaction: discord.Interaction, url: str):
         )
         return await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ── Fetch views ───────────────────────────────────────────────────────────
+    # ── Fetch views ──────────────��────────────────────────────────────────────
     result = await fetch_views(url)
     if not result["success"]:
         return await interaction.followup.send(
@@ -725,7 +737,7 @@ async def profil(interaction: discord.Interaction, member: discord.Member = None
     embed.set_footer(text="Campaign Clipper System")
     await interaction.response.send_message(embed=embed)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════���═════════════════════════════════════════
 # FITUR — /akun untuk manage akun sendiri
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1232,7 +1244,7 @@ async def hapus_akun_cmd(interaction: discord.Interaction, member: discord.Membe
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN — Bayar Gaji
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════��═══════
 
 @bot.tree.command(name="bayar", description="[ADMIN] Approve & tandai gaji sudah dibayar")
 @app_commands.describe(member="Clipper yang dibayar", catatan="Catatan (opsional)")
@@ -1265,8 +1277,18 @@ async def bayar(interaction: discord.Interaction, member: discord.Member, catata
         "amount": total, "gaji_clips": pending, "bonus_konsisten": bonus,
         "approved_by": str(interaction.user), "catatan": catatan, "paid_at": now_iso(),
     })
+    
+    # Otomatis update tiket yang open/processing menjadi completed
+    user_tickets = get_user_tickets(db, did)
+    tiket_updated = []
+    for ticket in user_tickets:
+        if ticket["status"] in ("open", "processing"):
+            update_ticket_status(db, ticket["id"], "completed")
+            tiket_updated.append(ticket["id"])
+    
     save_db(db)
 
+    # Response ephemeral untuk admin
     embed = discord.Embed(title="Pembayaran Berhasil!", color=0x57F287, timestamp=datetime.now(timezone.utc))
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Clipper", value=member.mention, inline=True)
@@ -1274,20 +1296,38 @@ async def bayar(interaction: discord.Interaction, member: discord.Member, catata
     if bonus > 0:
         embed.add_field(name=f"Bonus ({konsisten_data['label']})", value=fmt_rp(bonus), inline=True)
     embed.add_field(name="Total", value=f"**{fmt_rp(total)}**", inline=False)
+    if tiket_updated:
+        embed.add_field(name="Tiket Selesai", value=", ".join([f"#{t}" for t in tiket_updated]), inline=False)
     if catatan:
         embed.add_field(name="Catatan", value=catatan, inline=False)
     embed.set_footer(text=f"Approved by {interaction.user.display_name}")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    # DM to clipper
     try:
         dm = discord.Embed(title="Gajimu Sudah Ditransfer!", description=f"Total: **{fmt_rp(total)}**", color=0x57F287)
         if bonus > 0:
             dm.add_field(name="Bonus Konsisten", value=fmt_rp(bonus))
         if catatan:
             dm.add_field(name="Catatan Admin", value=catatan)
+        if tiket_updated:
+            dm.add_field(name="Tiket Selesai", value=", ".join([f"#{t}" for t in tiket_updated]), inline=False)
         await member.send(embed=dm)
     except Exception:
         pass
+    
+    # Log ke log_channel
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="Pembayaran Gaji",
+        description=(
+            f"**Clipper:** {member.mention}\n"
+            f"**Total:** {fmt_rp(total)}\n"
+            f"**Approved by:** {interaction.user.mention}"
+            + (f"\n**Tiket Selesai:** {', '.join([f'#{t}' for t in tiket_updated])}" if tiket_updated else "")
+        ),
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc)
+    ))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TIKET SYSTEM — Untuk klaim reward (nomor rekening dll)
@@ -1364,27 +1404,29 @@ class TicketModal(discord.ui.Modal, title="Buat Tiket Klaim Reward"):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # Send to ticket channel
-        ticket_ch_id = db["settings"].get("ticket_channel_id", 0)
-        if ticket_ch_id:
-            ch = interaction.guild.get_channel(ticket_ch_id)
-            if ch:
-                admin_embed = discord.Embed(
-                    title=f"Tiket Baru #{ticket['id']}",
-                    description=f"**User:** {interaction.user.mention}\n**Display Name:** {interaction.user.display_name}",
-                    color=0x5865F2,
-                    timestamp=datetime.now(timezone.utc)
-                )
-                admin_embed.add_field(name="Bank/E-Wallet", value=self.bank_name.value, inline=True)
-                admin_embed.add_field(name="Nomor Rekening", value=self.account_number.value, inline=True)
-                admin_embed.add_field(name="Atas Nama", value=self.account_holder.value, inline=True)
-                admin_embed.add_field(name="WhatsApp", value=self.phone_number.value, inline=True)
-                admin_embed.add_field(name="Gaji Pending", value=fmt_rp(clipper["pending_gaji"]), inline=True)
-                if self.notes.value:
-                    admin_embed.add_field(name="Catatan", value=self.notes.value, inline=False)
-                admin_embed.set_footer(text="Gunakan /tiket_proses untuk memproses")
+        # Send to log_channel (data sensitif, hanya admin)
+        admin_embed = discord.Embed(
+            title=f"Tiket Klaim Reward #{ticket['id']}",
+            description=f"**User:** {interaction.user.mention}\n**User ID:** {interaction.user.id}\n**Display Name:** {interaction.user.display_name}",
+            color=0xFEE75C,
+            timestamp=datetime.now(timezone.utc)
+        )
+        admin_embed.add_field(name="Bank/E-Wallet", value=self.bank_name.value, inline=True)
+        admin_embed.add_field(name="Nomor Rekening", value=self.account_number.value, inline=True)
+        admin_embed.add_field(name="Atas Nama", value=self.account_holder.value, inline=True)
+        admin_embed.add_field(name="WhatsApp", value=self.phone_number.value, inline=True)
+        admin_embed.add_field(name="Gaji Pending", value=fmt_rp(clipper["pending_gaji"]), inline=True)
+        if self.notes.value:
+            admin_embed.add_field(name="Catatan", value=self.notes.value, inline=False)
+        admin_embed.set_footer(text="Gunakan /bayar @user untuk memproses pembayaran")
+        
+        # Kirim ke log_channel
+        log_ch_id = db["settings"].get("log_channel_id", 0)
+        if log_ch_id:
+            log_ch = interaction.guild.get_channel(log_ch_id)
+            if log_ch:
                 try:
-                    await ch.send(embed=admin_embed)
+                    await log_ch.send(embed=admin_embed)
                 except Exception:
                     pass
 
@@ -1497,8 +1539,8 @@ async def tiket_list_cmd(interaction: discord.Interaction):
             inline=False
         )
     
-    embed.set_footer(text="Gunakan /tiket_proses untuk memproses tiket")
-    await interaction.response.send_message(embed=embed)
+    embed.set_footer(text="Gunakan /bayar @user untuk bayar (tiket otomatis selesai)")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="tiket_proses", description="[ADMIN] Proses tiket (tandai sebagai processing/completed)")
 @app_commands.describe(
@@ -1539,7 +1581,15 @@ async def tiket_proses_cmd(interaction: discord.Interaction, ticket_id: int, sta
     embed.add_field(name="Bank", value=ticket["bank_name"], inline=True)
     embed.set_footer(text=f"Diproses oleh {interaction.user.display_name}")
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    # Log ke log_channel
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title=f"Tiket #{ticket_id} Diupdate",
+        description=f"**User:** {ticket['display_name']}\n**Status:** {old_status.upper()} -> {status.upper()}\n**Oleh:** {interaction.user.mention}",
+        color=0x57F287 if status == "completed" else (0xFEE75C if status == "processing" else 0xED4245),
+        timestamp=datetime.now(timezone.utc)
+    ))
     
     # DM user
     try:
@@ -1562,12 +1612,10 @@ async def tiket_proses_cmd(interaction: discord.Interaction, ticket_id: int, sta
 
 @bot.tree.command(name="setup", description="[ADMIN] Setup semua channel sistem")
 @app_commands.describe(
-    clipper_channel="Channel utama clipper",
-    gaji_channel="Channel notifikasi gaji",
+    clipper_channel="Channel utama clipper (pengumuman, welcome)",
+    gaji_channel="Channel notifikasi milestone & gaji",
     rekap_channel="Channel rekap mingguan & periode",
-    log_channel="Channel log aktivitas bot",
-    approval_channel="Channel untuk approval pendaftaran",
-    ticket_channel="Channel untuk tiket klaim reward",
+    log_channel="Channel log admin (approval, tiket, pembayaran)",
 )
 async def setup(
     interaction: discord.Interaction,
@@ -1575,8 +1623,6 @@ async def setup(
     gaji_channel: discord.TextChannel,
     rekap_channel: discord.TextChannel,
     log_channel: discord.TextChannel,
-    approval_channel: discord.TextChannel = None,
-    ticket_channel: discord.TextChannel = None,
 ):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("Hanya admin.", ephemeral=True)
@@ -1585,21 +1631,14 @@ async def setup(
     db["settings"]["gaji_channel_id"] = gaji_channel.id
     db["settings"]["rekap_channel_id"] = rekap_channel.id
     db["settings"]["log_channel_id"] = log_channel.id
-    if approval_channel:
-        db["settings"]["approval_channel_id"] = approval_channel.id
-    if ticket_channel:
-        db["settings"]["ticket_channel_id"] = ticket_channel.id
     save_db(db)
 
     embed = discord.Embed(title="Setup Berhasil!", color=0x57F287)
-    embed.add_field(name="Clipper", value=clipper_channel.mention, inline=True)
-    embed.add_field(name="Gaji", value=gaji_channel.mention, inline=True)
-    embed.add_field(name="Rekap", value=rekap_channel.mention, inline=True)
-    embed.add_field(name="Log", value=log_channel.mention, inline=True)
-    if approval_channel:
-        embed.add_field(name="Approval", value=approval_channel.mention, inline=True)
-    if ticket_channel:
-        embed.add_field(name="Tiket", value=ticket_channel.mention, inline=True)
+    embed.add_field(name="Clipper", value=f"{clipper_channel.mention}\n(Pengumuman, Welcome)", inline=True)
+    embed.add_field(name="Gaji", value=f"{gaji_channel.mention}\n(Milestone)", inline=True)
+    embed.add_field(name="Rekap", value=f"{rekap_channel.mention}\n(Mingguan, Periode)", inline=True)
+    embed.add_field(name="Log Bot", value=f"{log_channel.mention}\n(Approval, Tiket, Pembayaran)", inline=True)
+    embed.set_footer(text="Semua data sensitif (approval, tiket, rekening) hanya masuk ke Log Bot")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="riwayat_gaji", description="Lihat riwayat pembayaran gaji")
@@ -1750,7 +1789,7 @@ async def before_update():
 
 # ══════════════════════════════════════════════════════════════════════════════
 # REKAP OTOMATIS MINGGUAN — setiap Senin pagi
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════���════════════════════════════════════════════════════════════════
 
 @tasks.loop(hours=24)
 async def weekly_recap():
