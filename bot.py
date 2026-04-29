@@ -1804,24 +1804,23 @@ async def info_gaji(interaction: discord.Interaction):
     embed.set_footer(text="Anti-duplikat & verifikasi aktif — submit hanya video milikmu!")
     await interaction.response.send_message(embed=embed)
 
-# ════════════════════════════════════───═════════════════════════════════════════
+# ════════════════════════════════════───═══════════════════════��═════════════════
 # FITUR — /init_guides untuk post panduan di setiap channel
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="init_guides", description="[ADMIN] Post panduan di setiap channel")
-async def init_guides(interaction: discord.Interaction):
-    """Post welcome guides ke semua channel"""
+@app_commands.describe(channel="Pilih channel mana yang ingin di-guide")
+async def init_guides(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    """Post welcome guides ke channel"""
     if not is_admin(interaction.user):
         return await interaction.response.send_message("Hanya admin.", ephemeral=True)
     
     await interaction.response.defer(ephemeral=True)
-    db = load_db()
-    guild = interaction.guild
     
     guides = {
-        "cara-daftar-clipper": discord.Embed(
-            title="📝 Cara Daftar Sebagai Clipper",
-            description=(
+        "cara-daftar-clipper": {
+            "title": "Cara Daftar Sebagai Clipper",
+            "description": (
                 "Ikuti langkah-langkah berikut untuk menjadi clipper resmi:\n\n"
                 "**Step 1: Daftar Akun**\n"
                 "Gunakan command: `!daftar <platform> <@username>`\n"
@@ -1830,24 +1829,23 @@ async def init_guides(interaction: discord.Interaction):
                 "Admin akan review dan approve pendaftaranmu di log-bot.\n"
                 "Kamu akan mendapat notif jika sudah disetujui.\n\n"
                 "**Step 3: Terima Role \"Clip\"**\n"
-                "Setelah diapprove, kamu otomatis dapat role **Clip** dan akses penuh.\n\n"
+                "Setelah diapprove, kamu otomatis dapat role Clip dan akses penuh.\n\n"
                 "**Step 4: Siap Submit Clip!**\n"
                 "Gunakan `/submit <link>` untuk submit clip pertamamu.\n\n"
                 "**Tips:**\n"
-                "• Pastikan username sesuai dengan akun asli\n"
-                "• Hanya daftar akun yang sudah siap produksi\n"
-                "• Bisa punya multiple akun (TikTok + YouTube)"
+                "- Pastikan username sesuai dengan akun asli\n"
+                "- Hanya daftar akun yang sudah siap produksi\n"
+                "- Bisa punya multiple akun (TikTok + YouTube)"
             ),
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0x5865F2,
+        },
         
-        "struktur-gaji": discord.Embed(
-            title="💰 Struktur Gaji Clipper",
-            description=(
+        "struktur-gaji": {
+            "title": "Struktur Gaji Clipper",
+            "description": (
                 "Gaji dihitung berdasarkan jumlah **views** video yang kamu submit.\n\n"
                 "**Tier Gaji:**\n"
-                "📊 Lihat tier dan bonus dengan command `/info_gaji`\n\n"
+                "Lihat tier dan bonus dengan command `/info_gaji`\n\n"
                 "**Cara Kerja:**\n"
                 "1. Submit clip dengan `/submit <link>`\n"
                 "2. Admin verifikasi dan approve\n"
@@ -1855,132 +1853,134 @@ async def init_guides(interaction: discord.Interaction):
                 "4. Gaji auto-naik sesuai tier saat views bertambah\n"
                 "5. Dapatkan bonus konsisten jika target terpenuhi\n\n"
                 "**Bonus Konsisten:**\n"
-                "• 5 clip/periode → Bonus 5%\n"
-                "• 10 clip/periode → Bonus 10%\n"
-                "• 20+ clip/periode → Bonus 15%\n\n"
+                "- 5 clip/periode = Bonus 5%\n"
+                "- 10 clip/periode = Bonus 10%\n"
+                "- 20+ clip/periode = Bonus 15%\n\n"
                 "**Klaim Gaji:**\n"
                 "Admin akan bayar otomatis via `/bayar`. Tidak perlu request!"
             ),
-            color=0x57F287,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0x57F287,
+        },
         
-        "submit-clip": discord.Embed(
-            title="🎬 Cara Submit Clip",
-            description=(
-                "**Submit clip untuk mendapatkan gaji berdasarkan views.**\n\n"
+        "submit-clip": {
+            "title": "Cara Submit Clip",
+            "description": (
+                "Submit clip untuk mendapatkan gaji berdasarkan views.\n\n"
                 "**Cara Submit:**\n"
                 "1. Copy link video (TikTok/YouTube)\n"
                 "2. Gunakan command: `/submit <link>`\n"
                 "Contoh: `/submit https://tiktok.com/video/1234567890`\n\n"
                 "**Syarat Clip:**\n"
-                "✓ Video milik akun clipper kamu sendiri\n"
-                "✓ Durasi minimal 10 detik\n"
-                "✓ Tidak ada watermark channel lain\n"
-                "✓ Belum pernah di-submit sebelumnya\n\n"
+                "- Video milik akun clipper kamu sendiri\n"
+                "- Durasi minimal 10 detik\n"
+                "- Tidak ada watermark channel lain\n"
+                "- Belum pernah di-submit sebelumnya\n\n"
                 "**Proses Approval:**\n"
                 "1. Admin verifikasi video dalam 24 jam\n"
-                "2. Jika approve → gaji mulai dihitung\n"
-                "3. Jika reject → bisa coba submit ulang\n\n"
+                "2. Jika approve = gaji mulai dihitung\n"
+                "3. Jika reject = bisa coba submit ulang\n\n"
                 "**Tips:**\n"
-                "• Gunakan `/akun` untuk lihat semua akun terdaftar\n"
-                "• Pastikan akun di-mention saat daftar\n"
-                "• Submit video yang quality terbaik"
+                "- Gunakan `/akun` untuk lihat semua akun terdaftar\n"
+                "- Pastikan akun di-mention saat daftar\n"
+                "- Submit video yang quality terbaik"
             ),
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0x5865F2,
+        },
         
-        "klaim-reward": discord.Embed(
-            title="🎁 Cara Klaim Reward / Gaji",
-            description=(
-                "**Proses klaim reward ada 2 step: Tiket → Pembayaran**\n\n"
+        "klaim-reward": {
+            "title": "Cara Klaim Reward / Gaji",
+            "description": (
+                "Proses klaim reward ada 2 step: Tiket = Pembayaran\n\n"
                 "**Step 1: Buat Tiket**\n"
                 "Gunakan command: `/tiket`\n"
                 "Isi form dengan data:\n"
-                "• Bank/E-Wallet (BCA, Mandiri, GCash, dll)\n"
-                "• Nomor Rekening / Nomor Tujuan\n"
-                "• Nama Pemilik Rekening\n"
-                "• Nomor WhatsApp (untuk konfirmasi)\n"
-                "• Catatan (opsional)\n\n"
+                "- Bank/E-Wallet (BCA, Mandiri, GCash, dll)\n"
+                "- Nomor Rekening / Nomor Tujuan\n"
+                "- Nama Pemilik Rekening\n"
+                "- Nomor WhatsApp (untuk konfirmasi)\n"
+                "- Catatan (opsional)\n\n"
                 "**Step 2: Tunggu Admin Bayar**\n"
-                "• Tiket kamu masuk ke log-admin\n"
-                "• Admin akan memproses via `/bayar`\n"
-                "• Gaji otomatis ditransfer ke rekening\n"
-                "• Kamu dapat notif DM + pengumuman di gaji channel\n\n"
+                "- Tiket kamu masuk ke log-admin\n"
+                "- Admin akan memproses via `/bayar`\n"
+                "- Gaji otomatis ditransfer ke rekening\n"
+                "- Kamu dapat notif DM + pengumuman di gaji channel\n\n"
                 "**Check Status Tiket:**\n"
                 "Gunakan `/tiket_saya` untuk lihat status tiket kamu.\n\n"
                 "**Catatan Penting:**\n"
-                "⚠️ Data rekening HANYA admin yang lihat (rahasia)\n"
-                "⚠️ Jangan share nomor rekening di public chat"
+                "Data rekening HANYA admin yang lihat (rahasia)\n"
+                "Jangan share nomor rekening di public chat"
             ),
-            color=0xFEE75C,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0xFEE75C,
+        },
         
-        "rekap-clipper": discord.Embed(
-            title="📊 Rekap Clipper",
-            description=(
+        "rekap-clipper": {
+            "title": "Rekap Clipper",
+            "description": (
                 "Channel ini untuk laporan berkala:\n\n"
                 "**Rekap Mingguan:**\n"
-                "• Top 5 clipper dengan views terbanyak\n"
-                "• Clip dengan views tertinggi\n"
-                "• Bonus milestone yang tercapai\n\n"
+                "- Top 5 clipper dengan views terbanyak\n"
+                "- Clip dengan views tertinggi\n"
+                "- Bonus milestone yang tercapai\n\n"
                 "**Rekap Periode:**\n"
-                "• Total views & gaji per clipper\n"
-                "• Bonus konsisten yang diberikan\n"
-                "• Ranking final periode\n\n"
-                "📌 Info lengkap bisa dilihat dengan `/leaderboard` dan `/info_gaji`"
+                "- Total views & gaji per clipper\n"
+                "- Bonus konsisten yang diberikan\n"
+                "- Ranking final periode\n\n"
+                "Info lengkap bisa dilihat dengan `/leaderboard` dan `/info_gaji`"
             ),
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0x5865F2,
+        },
         
-        "announcement-clipper": discord.Embed(
-            title="📣 Pengumuman Penting",
-            description=(
+        "announcement-clipper": {
+            "title": "Pengumuman Penting",
+            "description": (
                 "Channel ini untuk:\n"
-                "• Selamat datang clipper baru ✅\n"
-                "• Update sistem & policy 📋\n"
-                "• Challenge & event spesial 🏆\n"
-                "• Penting fix bugs & maintenance 🔧\n\n"
-                "🔔 Aktifkan notification untuk channel ini!"
+                "- Selamat datang clipper baru\n"
+                "- Update sistem & policy\n"
+                "- Challenge & event spesial\n"
+                "- Penting fix bugs & maintenance\n\n"
+                "Aktifkan notification untuk channel ini!"
             ),
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc)
-        ),
+            "color": 0x5865F2,
+        },
     }
     
-    count = 0
-    failed = 0
-    
-    for channel_name, embed in guides.items():
-        embed.set_footer(text="Type /help untuk melihat semua command")
+    # Jika user pilih channel spesifik
+    if channel:
+        for ch_name, guide_data in guides.items():
+            if ch_name in channel.name or channel.name in ch_name:
+                embed = discord.Embed(
+                    title=guide_data["title"],
+                    description=guide_data["description"],
+                    color=guide_data["color"],
+                    timestamp=datetime.now(timezone.utc)
+                )
+                embed.set_footer(text="Type /help untuk melihat semua command")
+                try:
+                    await channel.send(embed=embed)
+                    msg = f"Panduan posted ke {channel.mention}"
+                    print(f"[BOT] {msg}")
+                except Exception as e:
+                    msg = f"Error post ke {channel.mention}: {str(e)}"
+                    print(f"[BOT] {msg}")
+                
+                result = discord.Embed(title="Done", description=msg, color=0x57F287)
+                return await interaction.followup.send(embed=result, ephemeral=True)
         
-        # Cari channel by name
-        channel = discord.utils.get(guild.text_channels, name=channel_name)
-        if not channel:
-            print(f"[BOT] Channel {channel_name} tidak ditemukan")
-            failed += 1
-            continue
-        
-        try:
-            await channel.send(embed=embed)
-            count += 1
-            print(f"[BOT] Panduan posted ke #{channel_name}")
-        except Exception as e:
-            print(f"[BOT] Gagal post ke #{channel_name}: {e}")
-            failed += 1
+        return await interaction.followup.send(
+            embed=discord.Embed(title="Error", description=f"Channel {channel.mention} tidak match dengan guide channels", color=0xED4245),
+            ephemeral=True
+        )
     
-    result_embed = discord.Embed(
-        title="✅ Guides Berhasil Dipost",
-        description=f"Posted ke {count} channel",
-        color=0x57F287
+    # Jika tidak pilih channel, list semuanya
+    channels_list = "\n".join([f"- `{ch_name}`" for ch_name in guides.keys()])
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Pilih Channel",
+            description=f"Gunakan `/init_guides <channel>` untuk salah satu channel:\n\n{channels_list}",
+            color=0x5865F2
+        ),
+        ephemeral=True
     )
-    if failed > 0:
-        result_embed.add_field(name="⚠️ Gagal", value=f"{failed} channel tidak ditemukan")
-    
-    await interaction.followup.send(embed=result_embed, ephemeral=True)
 
 # ════════════════════════════════════───═════════════════════════════════════════
 # FITUR — Milestone Notif (dicek saat auto-update)
@@ -2084,7 +2084,7 @@ async def auto_update_views():
 async def before_update():
     await bot.wait_until_ready()
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════��════════════════════════
 # REKAP OTOMATIS MINGGUAN — setiap Senin pagi
 # ═════════════���════════════════════════════════════════════════════════════════
 
