@@ -1198,7 +1198,7 @@ async def hapus_warning_cmd(interaction: discord.Interaction, member: discord.Me
     clear_warnings(db, str(member.id))
     await interaction.response.send_message(f"Semua warning {member.mention} dihapus.", ephemeral=True)
 
-# ═���════════════════════════════════════════════════════════════════════════════
+# ═�����════════════════════════════════════════════════════════════════════════════
 # EDIT CLIPPER — Admin only untuk edit akun
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1804,183 +1804,177 @@ async def info_gaji(interaction: discord.Interaction):
     embed.set_footer(text="Anti-duplikat & verifikasi aktif — submit hanya video milikmu!")
     await interaction.response.send_message(embed=embed)
 
-# ════════════════════════════════════───═══════════════════════��═════════════════
+# ════════════════════════════════════───═══════════════════════���═════════════════
 # FITUR — /init_guides untuk post panduan di setiap channel
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="init_guides", description="[ADMIN] Post panduan di setiap channel")
-@app_commands.describe(channel="Pilih channel mana yang ingin di-guide")
-async def init_guides(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    """Post welcome guides ke channel"""
+@bot.tree.command(name="info_channel", description="[ADMIN] Post info guide di channel")
+@app_commands.describe(
+    channel="Channel untuk post info",
+    guide_type="Tipe guide yang mau dipost"
+)
+@app_commands.choices(guide_type=[
+    app_commands.Choice(name="Cara Daftar", value="daftar"),
+    app_commands.Choice(name="Struktur Gaji", value="gaji"),
+    app_commands.Choice(name="Cara Submit", value="submit"),
+    app_commands.Choice(name="Klaim Reward", value="reward"),
+    app_commands.Choice(name="Rekap", value="rekap"),
+    app_commands.Choice(name="Pengumuman", value="announce"),
+])
+async def info_channel(interaction: discord.Interaction, channel: discord.TextChannel, guide_type: str):
+    """Post info guide ke channel"""
     if not is_admin(interaction.user):
         return await interaction.response.send_message("Hanya admin.", ephemeral=True)
     
     await interaction.response.defer(ephemeral=True)
     
     guides = {
-        "cara-daftar-clipper": {
-            "title": "Cara Daftar Sebagai Clipper",
-            "description": (
-                "Ikuti langkah-langkah berikut untuk menjadi clipper resmi:\n\n"
-                "**Step 1: Daftar Akun**\n"
-                "Gunakan command: `!daftar <platform> <@username>`\n"
-                "Contoh: `!daftar tiktok @myusername` atau `!daftar youtube @channelname`\n\n"
-                "**Step 2: Tunggu Approval**\n"
-                "Admin akan review dan approve pendaftaranmu di log-bot.\n"
-                "Kamu akan mendapat notif jika sudah disetujui.\n\n"
-                "**Step 3: Terima Role \"Clip\"**\n"
-                "Setelah diapprove, kamu otomatis dapat role Clip dan akses penuh.\n\n"
-                "**Step 4: Siap Submit Clip!**\n"
-                "Gunakan `/submit <link>` untuk submit clip pertamamu.\n\n"
-                "**Tips:**\n"
-                "- Pastikan username sesuai dengan akun asli\n"
-                "- Hanya daftar akun yang sudah siap produksi\n"
-                "- Bisa punya multiple akun (TikTok + YouTube)"
-            ),
-            "color": 0x5865F2,
-        },
-        
-        "struktur-gaji": {
-            "title": "Struktur Gaji Clipper",
-            "description": (
-                "Gaji dihitung berdasarkan jumlah **views** video yang kamu submit.\n\n"
-                "**Tier Gaji:**\n"
-                "Lihat tier dan bonus dengan command `/info_gaji`\n\n"
-                "**Cara Kerja:**\n"
-                "1. Submit clip dengan `/submit <link>`\n"
-                "2. Admin verifikasi dan approve\n"
-                "3. Views auto-update setiap 6 jam\n"
-                "4. Gaji auto-naik sesuai tier saat views bertambah\n"
-                "5. Dapatkan bonus konsisten jika target terpenuhi\n\n"
-                "**Bonus Konsisten:**\n"
-                "- 5 clip/periode = Bonus 5%\n"
-                "- 10 clip/periode = Bonus 10%\n"
-                "- 20+ clip/periode = Bonus 15%\n\n"
-                "**Klaim Gaji:**\n"
-                "Admin akan bayar otomatis via `/bayar`. Tidak perlu request!"
-            ),
-            "color": 0x57F287,
-        },
-        
-        "submit-clip": {
-            "title": "Cara Submit Clip",
-            "description": (
-                "Submit clip untuk mendapatkan gaji berdasarkan views.\n\n"
-                "**Cara Submit:**\n"
-                "1. Copy link video (TikTok/YouTube)\n"
-                "2. Gunakan command: `/submit <link>`\n"
-                "Contoh: `/submit https://tiktok.com/video/1234567890`\n\n"
-                "**Syarat Clip:**\n"
-                "- Video milik akun clipper kamu sendiri\n"
-                "- Durasi minimal 10 detik\n"
-                "- Tidak ada watermark channel lain\n"
-                "- Belum pernah di-submit sebelumnya\n\n"
-                "**Proses Approval:**\n"
-                "1. Admin verifikasi video dalam 24 jam\n"
-                "2. Jika approve = gaji mulai dihitung\n"
-                "3. Jika reject = bisa coba submit ulang\n\n"
-                "**Tips:**\n"
-                "- Gunakan `/akun` untuk lihat semua akun terdaftar\n"
-                "- Pastikan akun di-mention saat daftar\n"
-                "- Submit video yang quality terbaik"
-            ),
-            "color": 0x5865F2,
-        },
-        
-        "klaim-reward": {
-            "title": "Cara Klaim Reward / Gaji",
-            "description": (
-                "Proses klaim reward ada 2 step: Tiket = Pembayaran\n\n"
-                "**Step 1: Buat Tiket**\n"
-                "Gunakan command: `/tiket`\n"
-                "Isi form dengan data:\n"
-                "- Bank/E-Wallet (BCA, Mandiri, GCash, dll)\n"
-                "- Nomor Rekening / Nomor Tujuan\n"
-                "- Nama Pemilik Rekening\n"
-                "- Nomor WhatsApp (untuk konfirmasi)\n"
-                "- Catatan (opsional)\n\n"
-                "**Step 2: Tunggu Admin Bayar**\n"
-                "- Tiket kamu masuk ke log-admin\n"
-                "- Admin akan memproses via `/bayar`\n"
-                "- Gaji otomatis ditransfer ke rekening\n"
-                "- Kamu dapat notif DM + pengumuman di gaji channel\n\n"
-                "**Check Status Tiket:**\n"
-                "Gunakan `/tiket_saya` untuk lihat status tiket kamu.\n\n"
-                "**Catatan Penting:**\n"
-                "Data rekening HANYA admin yang lihat (rahasia)\n"
-                "Jangan share nomor rekening di public chat"
-            ),
-            "color": 0xFEE75C,
-        },
-        
-        "rekap-clipper": {
-            "title": "Rekap Clipper",
-            "description": (
-                "Channel ini untuk laporan berkala:\n\n"
-                "**Rekap Mingguan:**\n"
-                "- Top 5 clipper dengan views terbanyak\n"
-                "- Clip dengan views tertinggi\n"
-                "- Bonus milestone yang tercapai\n\n"
-                "**Rekap Periode:**\n"
-                "- Total views & gaji per clipper\n"
-                "- Bonus konsisten yang diberikan\n"
-                "- Ranking final periode\n\n"
-                "Info lengkap bisa dilihat dengan `/leaderboard` dan `/info_gaji`"
-            ),
-            "color": 0x5865F2,
-        },
-        
-        "announcement-clipper": {
-            "title": "Pengumuman Penting",
-            "description": (
-                "Channel ini untuk:\n"
-                "- Selamat datang clipper baru\n"
-                "- Update sistem & policy\n"
-                "- Challenge & event spesial\n"
-                "- Penting fix bugs & maintenance\n\n"
-                "Aktifkan notification untuk channel ini!"
-            ),
-            "color": 0x5865F2,
-        },
+        "daftar": (
+            "Cara Daftar Sebagai Clipper",
+            "Ikuti langkah-langkah berikut untuk menjadi clipper resmi:\n\n"
+            "Step 1: Daftar Akun\n"
+            "Gunakan command: !daftar <platform> <@username>\n"
+            "Contoh: !daftar tiktok @myusername\n\n"
+            "Step 2: Tunggu Approval\n"
+            "Admin akan review dan approve di log-bot.\n"
+            "Kamu akan dapat notif jika disetujui.\n\n"
+            "Step 3: Terima Role Clip\n"
+            "Setelah diapprove, kamu dapat role Clip dan akses penuh.\n\n"
+            "Step 4: Submit Clip\n"
+            "Gunakan /submit <link> untuk submit clip pertama.\n\n"
+            "Tips:\n"
+            "- Pastikan username sesuai akun asli\n"
+            "- Hanya daftar akun siap produksi\n"
+            "- Bisa punya multiple akun"
+        ),
+        "gaji": (
+            "Struktur Gaji Clipper",
+            "Gaji dihitung berdasarkan views video yang kamu submit.\n\n"
+            "Tier Gaji:\n"
+            "Lihat tier dan bonus dengan /info_gaji\n\n"
+            "Cara Kerja:\n"
+            "1. Submit clip dengan /submit <link>\n"
+            "2. Admin verifikasi dan approve\n"
+            "3. Views auto-update setiap 6 jam\n"
+            "4. Gaji auto-naik sesuai tier\n"
+            "5. Dapatkan bonus konsisten jika target terpenuhi\n\n"
+            "Bonus Konsisten:\n"
+            "- 5 clip/periode = Bonus 5%\n"
+            "- 10 clip/periode = Bonus 10%\n"
+            "- 20+ clip/periode = Bonus 15%\n\n"
+            "Klaim Gaji:\n"
+            "Admin akan bayar otomatis via /bayar"
+        ),
+        "submit": (
+            "Cara Submit Clip",
+            "Submit clip untuk mendapatkan gaji berdasarkan views.\n\n"
+            "Cara Submit:\n"
+            "1. Copy link video (TikTok/YouTube)\n"
+            "2. Gunakan: /submit <link>\n"
+            "Contoh: /submit https://tiktok.com/video/1234567890\n\n"
+            "Syarat Clip:\n"
+            "- Video milik akun clipper kamu sendiri\n"
+            "- Durasi minimal 10 detik\n"
+            "- Tidak ada watermark channel lain\n"
+            "- Belum pernah di-submit sebelumnya\n\n"
+            "Proses Approval:\n"
+            "1. Admin verifikasi video dalam 24 jam\n"
+            "2. Jika approve = gaji mulai dihitung\n"
+            "3. Jika reject = bisa submit ulang\n\n"
+            "Tips:\n"
+            "- Gunakan /akun untuk lihat semua akun\n"
+            "- Pastikan akun di-mention saat daftar\n"
+            "- Submit video quality terbaik"
+        ),
+        "reward": (
+            "Cara Klaim Reward / Gaji",
+            "Proses klaim reward ada 2 step: Tiket -> Pembayaran\n\n"
+            "Step 1: Buat Tiket\n"
+            "Gunakan command: /tiket\n"
+            "Isi form dengan data:\n"
+            "- Bank/E-Wallet (BCA, Mandiri, GCash, dll)\n"
+            "- Nomor Rekening / Nomor Tujuan\n"
+            "- Nama Pemilik Rekening\n"
+            "- Nomor WhatsApp (untuk konfirmasi)\n"
+            "- Catatan (opsional)\n\n"
+            "Step 2: Tunggu Admin Bayar\n"
+            "- Tiket kamu masuk ke log-admin\n"
+            "- Admin akan memproses via /bayar\n"
+            "- Gaji otomatis ditransfer ke rekening\n"
+            "- Kamu dapat notif DM + pengumuman di gaji channel\n\n"
+            "Check Status Tiket:\n"
+            "Gunakan /tiket_saya untuk lihat status.\n\n"
+            "Catatan Penting:\n"
+            "- Data rekening HANYA admin yang lihat (rahasia)\n"
+            "- Jangan share nomor rekening di public chat"
+        ),
+        "rekap": (
+            "Rekap Clipper",
+            "Channel ini untuk laporan berkala.\n\n"
+            "Rekap Mingguan:\n"
+            "- Top 5 clipper dengan views terbanyak\n"
+            "- Clip dengan views tertinggi\n"
+            "- Bonus milestone yang tercapai\n\n"
+            "Rekap Periode:\n"
+            "- Total views & gaji per clipper\n"
+            "- Bonus konsisten yang diberikan\n"
+            "- Ranking final periode\n\n"
+            "Info lengkap bisa dilihat dengan /leaderboard dan /info_gaji"
+        ),
+        "announce": (
+            "Pengumuman Penting",
+            "Channel ini untuk:\n"
+            "- Selamat datang clipper baru\n"
+            "- Update sistem & policy\n"
+            "- Challenge & event spesial\n"
+            "- Penting fix bugs & maintenance\n\n"
+            "Aktifkan notification untuk channel ini!"
+        ),
     }
     
-    # Jika user pilih channel spesifik
-    if channel:
-        for ch_name, guide_data in guides.items():
-            if ch_name in channel.name or channel.name in ch_name:
-                embed = discord.Embed(
-                    title=guide_data["title"],
-                    description=guide_data["description"],
-                    color=guide_data["color"],
-                    timestamp=datetime.now(timezone.utc)
-                )
-                embed.set_footer(text="Type /help untuk melihat semua command")
-                try:
-                    await channel.send(embed=embed)
-                    msg = f"Panduan posted ke {channel.mention}"
-                    print(f"[BOT] {msg}")
-                except Exception as e:
-                    msg = f"Error post ke {channel.mention}: {str(e)}"
-                    print(f"[BOT] {msg}")
-                
-                result = discord.Embed(title="Done", description=msg, color=0x57F287)
-                return await interaction.followup.send(embed=result, ephemeral=True)
-        
+    if guide_type not in guides:
         return await interaction.followup.send(
-            embed=discord.Embed(title="Error", description=f"Channel {channel.mention} tidak match dengan guide channels", color=0xED4245),
+            embed=discord.Embed(title="Error", description="Guide type tidak valid", color=0xED4245),
             ephemeral=True
         )
     
-    # Jika tidak pilih channel, list semuanya
-    channels_list = "\n".join([f"- `{ch_name}`" for ch_name in guides.keys()])
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title="Pilih Channel",
-            description=f"Gunakan `/init_guides <channel>` untuk salah satu channel:\n\n{channels_list}",
-            color=0x5865F2
-        ),
-        ephemeral=True
+    title, description = guides[guide_type]
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=0x5865F2 if guide_type != "reward" else 0xFEE75C,
+        timestamp=datetime.now(timezone.utc)
     )
+    embed.set_footer(text="Type /help untuk melihat semua command")
+    
+    try:
+        print(f"[v0] Posting ke channel: {channel.name} (ID: {channel.id})")
+        print(f"[v0] Bot permissions di channel: {channel.permissions_for(interaction.guild.me)}")
+        
+        msg = await channel.send(embed=embed)
+        print(f"[v0] Berhasil posted message ID: {msg.id}")
+        
+        result = discord.Embed(
+            title="Sukses",
+            description=f"Guide '{title}' posted ke {channel.mention}",
+            color=0x57F287
+        )
+    except discord.Forbidden as e:
+        print(f"[v0] Forbidden Error: {e}")
+        result = discord.Embed(
+            title="Error: Forbidden",
+            description=f"Bot tidak punya permission send_messages di {channel.mention}.\nPastikan bot punya role yang tepat dan channel permission sudah benar.",
+            color=0xED4245
+        )
+    except Exception as e:
+        print(f"[v0] Error: {type(e).__name__}: {e}")
+        result = discord.Embed(
+            title="Error",
+            description=f"{type(e).__name__}: {str(e)}",
+            color=0xED4245
+        )
+    
+    await interaction.followup.send(embed=result, ephemeral=True)
 
 # ════════════════════════════════════───═════════════════════════════════════════
 # FITUR — Milestone Notif (dicek saat auto-update)
