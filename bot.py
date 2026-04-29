@@ -44,27 +44,53 @@ def has_clip_role(member: discord.Member) -> bool:
     """Check if member has the Clip role"""
     return any(r.name == CLIP_ROLE_NAME for r in member.roles)
 
-async def give_clip_role(member: discord.Member, guild: discord.Guild) -> bool:
-    """Give Clip role to member"""
+async def give_clip_role(member: discord.Member, guild: discord.Guild) -> tuple[bool, str]:
+    """Give Clip role to member. Returns (success, message)"""
+    print(f"[v0] Mencari role dengan nama: '{CLIP_ROLE_NAME}'")
+    print(f"[v0] Semua role di server: {[r.name for r in guild.roles]}")
+    
     role = discord.utils.get(guild.roles, name=CLIP_ROLE_NAME)
-    if role:
-        try:
-            await member.add_roles(role)
-            return True
-        except Exception:
-            return False
-    return False
+    
+    if not role:
+        print(f"[v0] Role '{CLIP_ROLE_NAME}' TIDAK DITEMUKAN!")
+        return False, f"Role '{CLIP_ROLE_NAME}' tidak ditemukan di server. Buat role dengan nama persis '{CLIP_ROLE_NAME}' atau set CLIP_ROLE_NAME di environment variable."
+    
+    print(f"[v0] Role ditemukan: {role.name} (ID: {role.id})")
+    
+    # Check bot permission
+    bot_member = guild.me
+    if not bot_member.guild_permissions.manage_roles:
+        print(f"[v0] Bot tidak punya permission Manage Roles!")
+        return False, "Bot tidak punya permission 'Manage Roles'."
+    
+    # Check role hierarchy
+    if role >= bot_member.top_role:
+        print(f"[v0] Role {role.name} lebih tinggi dari bot role!")
+        return False, f"Role '{role.name}' posisinya lebih tinggi dari role bot. Pindahkan role bot ke atas role '{role.name}'."
+    
+    try:
+        await member.add_roles(role, reason="Approved as Clipper")
+        print(f"[v0] Berhasil memberikan role {role.name} ke {member.display_name}")
+        return True, f"Role '{role.name}' berhasil diberikan!"
+    except discord.Forbidden as e:
+        print(f"[v0] Forbidden error: {e}")
+        return False, f"Bot tidak punya izin untuk memberikan role ini. Error: {e}"
+    except Exception as e:
+        print(f"[v0] Error: {e}")
+        return False, f"Gagal memberikan role: {e}"
 
-async def remove_clip_role(member: discord.Member, guild: discord.Guild) -> bool:
-    """Remove Clip role from member"""
+async def remove_clip_role(member: discord.Member, guild: discord.Guild) -> tuple[bool, str]:
+    """Remove Clip role from member. Returns (success, message)"""
     role = discord.utils.get(guild.roles, name=CLIP_ROLE_NAME)
-    if role:
-        try:
-            await member.remove_roles(role)
-            return True
-        except Exception:
-            return False
-    return False
+    if not role:
+        return False, f"Role '{CLIP_ROLE_NAME}' tidak ditemukan."
+    try:
+        await member.remove_roles(role, reason="Removed as Clipper")
+        return True, f"Role '{role.name}' berhasil dihapus."
+    except discord.Forbidden:
+        return False, "Bot tidak punya izin untuk menghapus role ini."
+    except Exception as e:
+        return False, f"Gagal menghapus role: {e}"
 
 def fmt_rp(n: int) -> str:
     return f"Rp {n:,.0f}".replace(",", ".")
@@ -340,8 +366,8 @@ async def approve_cmd(interaction: discord.Interaction, member: discord.Member):
     clipper = approve_registration(db, did)
     
     # Give Clip role
-    role_given = await give_clip_role(member, interaction.guild)
-    role_msg = f"\nRole **{CLIP_ROLE_NAME}** diberikan!" if role_given else "\n(Gagal memberikan role, berikan manual)"
+    role_success, role_message = await give_clip_role(member, interaction.guild)
+    role_msg = f"\n{role_message}"
     
     # Give channel access
     access_msg = ""
@@ -1024,7 +1050,7 @@ async def warning_cmd(interaction: discord.Interaction, member: discord.Member, 
     embed.add_field(name="Alasan", value=alasan, inline=False)
     if auto_bl:
         embed.add_field(name="Status", value="Otomatis di-blacklist!", inline=False)
-        await remove_clip_role(member, interaction.guild)
+        _, _ = await remove_clip_role(member, interaction.guild)
     await interaction.response.send_message(embed=embed)
 
     try:
@@ -1054,7 +1080,7 @@ async def blacklist_cmd(interaction: discord.Interaction, member: discord.Member
     await interaction.response.send_message(embed=embed)
 
     # Cabut role dan akses channel
-    await remove_clip_role(member, interaction.guild)
+    _, _ = await remove_clip_role(member, interaction.guild)
     
     ch_id = db["settings"].get("clipper_channel_id", 0)
     if ch_id:
