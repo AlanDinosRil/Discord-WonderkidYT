@@ -640,6 +640,117 @@ async def hapus_warning_cmd(interaction: discord.Interaction, member: discord.Me
     await interaction.response.send_message(f"✅ Semua warning {member.mention} dihapus.", ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EDIT CLIPPER — Clipper edit sendiri, Admin edit siapa saja
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="edit_clipper", description="Edit data clipper (username/platform)")
+@app_commands.describe(
+    platform="Platform baru: tiktok atau youtube (opsional)",
+    username="Username baru (opsional)",
+    member="[ADMIN] Edit data clipper lain",
+)
+@app_commands.choices(platform=[
+    app_commands.Choice(name="TikTok", value="tiktok"),
+    app_commands.Choice(name="YouTube", value="youtube"),
+])
+async def edit_clipper_cmd(
+    interaction: discord.Interaction,
+    platform: str = None,
+    username: str = None,
+    member: discord.Member = None,
+):
+    db = load_db()
+
+    # Tentukan target: admin bisa edit orang lain, clipper hanya diri sendiri
+    if member and not is_admin(interaction.user):
+        return await interaction.response.send_message(
+            "❌ Hanya admin yang bisa edit data clipper lain.", ephemeral=True
+        )
+
+    target = member or interaction.user
+    did = str(target.id)
+    clipper = get_clipper(db, did)
+
+    if not clipper:
+        return await interaction.response.send_message(
+            f"❌ {'Kamu' if not member else target.display_name} belum terdaftar sebagai clipper.",
+            ephemeral=True
+        )
+
+    if not platform and not username:
+        return await interaction.response.send_message(
+            "❌ Isi minimal satu field yang ingin diubah (`platform` atau `username`).",
+            ephemeral=True
+        )
+
+    # Simpan data lama untuk log
+    old_platform = clipper["platform"]
+    old_username = clipper["username"]
+
+    # Update field yang diisi saja
+    if platform:
+        db["clippers"][did]["platform"] = platform
+    if username:
+        db["clippers"][did]["username"] = username.lstrip("@")
+
+    save_db(db)
+
+    new_platform = db["clippers"][did]["platform"]
+    new_username = db["clippers"][did]["username"]
+
+    embed = discord.Embed(
+        title="✅ Data Clipper Diperbarui",
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="👤 Clipper", value=target.mention, inline=False)
+
+    if platform:
+        embed.add_field(
+            name="📱 Platform",
+            value=f"~~{old_platform.title()}~~ → **{new_platform.title()}**",
+            inline=True
+        )
+    if username:
+        embed.add_field(
+            name="🎭 Username",
+            value=f"~~@{old_username}~~ → **@{new_username}**",
+            inline=True
+        )
+
+    embed.set_footer(text=f"Diubah oleh {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+    # Log perubahan
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="✏️ Data Clipper Diedit",
+        description=(
+            f"**Oleh:** {interaction.user.mention}\n"
+            f"**Target:** {target.mention}\n"
+            f"**Platform:** {old_platform} → {new_platform}\n"
+            f"**Username:** @{old_username} → @{new_username}"
+        ),
+        color=0xFEE75C,
+        timestamp=datetime.now(timezone.utc)
+    ))
+
+    # DM notif ke clipper jika yang edit adalah admin
+    if member and interaction.user.id != target.id:
+        try:
+            dm = discord.Embed(
+                title="✏️ Data Kamu Diperbarui oleh Admin",
+                color=0xFEE75C
+            )
+            if platform:
+                dm.add_field(name="📱 Platform Baru", value=new_platform.title(), inline=True)
+            if username:
+                dm.add_field(name="🎭 Username Baru", value=f"@{new_username}", inline=True)
+            await target.send(embed=dm)
+        except Exception:
+            pass
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ADMIN — Bayar Gaji
 # ══════════════════════════════════════════════════════════════════════════════
 
