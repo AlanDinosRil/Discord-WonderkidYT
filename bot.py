@@ -1040,23 +1040,204 @@ async def update_views(interaction: discord.Interaction, clip_id: int):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="buka_periode", description="[ADMIN] Buka periode gaji baru")
-@app_commands.describe(nama="Nama periode (misal: April 2025)", durasi="Durasi hari (default: 30)")
-async def buka_periode_cmd(interaction: discord.Interaction, nama: str, durasi: int = 30):
+@app_commands.describe(
+    nama="Nama periode (misal: April 2025)",
+    durasi="Durasi hari (default: 30)",
+    note="Catatan/pengumuman untuk clipper (opsional)",
+    target_views="Target views periode ini (opsional, misal: 1000000)",
+    hadiah_tambahan="Hadiah tambahan selain gaji (opsional, misal: Bonus Rp 100.000)",
+)
+async def buka_periode_cmd(
+    interaction: discord.Interaction,
+    nama: str,
+    durasi: int = 30,
+    note: str = "",
+    target_views: str = "",
+    hadiah_tambahan: str = "",
+):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("Hanya admin.", ephemeral=True)
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
     db = load_db()
     if periode_aktif(db):
         return await interaction.response.send_message(
-            f"Periode **{db['periode']['nama']}** masih aktif. Tutup dulu dengan `/tutup_periode`.", ephemeral=True
+            f"⚠️ Periode **{db['periode']['nama']}** masih aktif. Tutup dulu dengan `/tutup_periode`.", ephemeral=True
         )
     buka_periode(db, nama, durasi)
+
+    # Simpan metadata periode tambahan
+    db["periode"]["note"] = note
+    db["periode"]["target_views"] = target_views
+    db["periode"]["hadiah_tambahan"] = hadiah_tambahan
+    save_db(db)
+
+    mulai = datetime.now(timezone.utc)
+    selesai = mulai + timedelta(days=durasi)
+
     embed = discord.Embed(
-        title="Periode Baru Dibuka!",
-        description=f"**{nama}** — {durasi} hari\nLeaderboard periode dapat dilihat di `/leaderboard periode`",
+        title=f"🚀 Periode Baru Dimulai!",
+        description=f"**{nama}**",
         color=0x57F287,
-        timestamp=datetime.now(timezone.utc)
+        timestamp=mulai
     )
+    embed.add_field(name="📅 Mulai", value=mulai.strftime("%d %b %Y"), inline=True)
+    embed.add_field(name="🏁 Selesai", value=selesai.strftime("%d %b %Y"), inline=True)
+    embed.add_field(name="⏳ Durasi", value=f"{durasi} hari", inline=True)
+
+    if target_views:
+        embed.add_field(name="🎯 Target Views", value=target_views, inline=True)
+    if hadiah_tambahan:
+        embed.add_field(name="🎁 Hadiah Tambahan", value=hadiah_tambahan, inline=True)
+    if note:
+        embed.add_field(name="📋 Catatan", value=note, inline=False)
+
+    embed.add_field(
+        name="💰 Sistem Gaji",
+        value="100K→50rb | 300K→150rb | 500K→300rb | 1M→700rb",
+        inline=False
+    )
+    embed.set_footer(text=f"Dibuka oleh {interaction.user.display_name} • Gunakan /leaderboard periode")
+
+    # Kirim ke channel rekap jika ada
+    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
+    if rekap_ch_id:
+        ch = interaction.guild.get_channel(rekap_ch_id)
+        if ch:
+            await ch.send(embed=embed)
+
     await interaction.response.send_message(embed=embed)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JADWAL LIVE STREAM — MULTI JADWAL (bisa input banyak sekaligus)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Storage sementara per user untuk jadwal yang sedang dikumpulkan
+_jadwal_sessions: dict = {}  # discord_id -> list of jadwal dicts
+
+
+def _parse_jadwal_lines(teks: str) -> list:
+    """
+    Parse jadwal dari format:
+    Senin, 5 Mei | 20.00 WIB | Ngobrol santai, Q&A
+    Selasa, 6 Mei | 19.00 WIB | Game bareng
+    """
+    hasil = []
+    for line in teks.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 3:
+            hasil.append({
+                "tanggal": parts[0],
+                "jam": parts[1],
+                "agenda": parts[2],
+                "catatan": parts[3] if len(parts) >= 4 else "",
+            })
+        elif len(parts) == 2:
+            hasil.append({
+                "tanggal": parts[0],
+                "jam": parts[1],
+                "agenda": "-",
+                "catatan": "",
+            })
+    return hasil
+
+
+class JadwalMingguanModal(discord.ui.Modal, title="📅 Jadwal Live Mingguan"):
+    minggu = discord.ui.TextInput(
+        label="Periode / Judul Jadwal",
+        placeholder="Misal: Jadwal Live Minggu 1 Mei — 7 Mei 2025",
+        max_length=100,
+        required=True,
+    )
+    jadwal_list = discord.ui.TextInput(
+        label="Daftar Jadwal (Format: Tanggal | Jam | Agenda)",
+        placeholder=(
+            "Senin, 5 Mei | 20.00 WIB | Ngobrol santai, Q&A\n"
+            "Rabu, 7 Mei | 19.30 WIB | Game bareng viewers\n"
+            "Jumat, 9 Mei | 21.00 WIB | Announcement + Special Guest\n"
+            "Minggu, 11 Mei | 20.00 WIB | Free talk & request"
+        ),
+        style=discord.TextStyle.paragraph,
+        max_length=1500,
+        required=True,
+    )
+    catatan_umum = discord.ui.TextInput(
+        label="Catatan Umum (berlaku untuk semua jadwal)",
+        placeholder="Misal: Semua live di TikTok @username | Ingatkan di channel ini!",
+        style=discord.TextStyle.paragraph,
+        max_length=300,
+        required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        jadwals = _parse_jadwal_lines(self.jadwal_list.value)
+
+        if not jadwals:
+            return await interaction.response.send_message(
+                "❌ Format jadwal salah! Gunakan format:\n`Tanggal | Jam | Agenda`\nContoh: `Senin, 5 Mei | 20.00 WIB | Q&A`",
+                ephemeral=True
+            )
+
+        WARNA = [0xFF6B6B, 0xFF9F43, 0xFECA57, 0x48DBFB, 0xFF9FF3, 0x54A0FF, 0x5F27CD]
+        hari_icons = {
+            "senin": "1️⃣", "selasa": "2️⃣", "rabu": "3️⃣",
+            "kamis": "4️⃣", "jumat": "5️⃣", "sabtu": "6️⃣", "minggu": "7️⃣",
+        }
+
+        # Embed header
+        header_embed = discord.Embed(
+            title=f"📣 {self.minggu.value}",
+            description=f"**{len(jadwals)} jadwal live** minggu ini!\nSimak semua jadwalnya di bawah 👇",
+            color=0xFF6B6B,
+            timestamp=datetime.now(timezone.utc)
+        )
+        if self.catatan_umum.value.strip():
+            header_embed.add_field(
+                name="📌 Catatan Umum",
+                value=self.catatan_umum.value.strip(),
+                inline=False
+            )
+        header_embed.set_footer(text=f"Dibuat oleh {interaction.user.display_name}")
+        header_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+
+        # Satu embed per jadwal
+        jadwal_embeds = []
+        for i, j in enumerate(jadwals):
+            tanggal_lower = j["tanggal"].lower()
+            icon = next((v for k, v in hari_icons.items() if k in tanggal_lower), "📅")
+            warna = WARNA[i % len(WARNA)]
+
+            agenda_lines = j["agenda"].split(",")
+            agenda_fmt = "\n".join(f"▸ {a.strip()}" for a in agenda_lines if a.strip())
+
+            emb = discord.Embed(
+                title=f"{icon} {j['tanggal']}",
+                color=warna,
+            )
+            emb.add_field(name="🕐 Jam", value=j["jam"], inline=True)
+            emb.add_field(name="📋 Agenda", value=agenda_fmt or "-", inline=False)
+            if j.get("catatan"):
+                emb.add_field(name="📌 Catatan", value=j["catatan"], inline=False)
+
+            jadwal_embeds.append(emb)
+
+        # Kirim semua embed sekaligus
+        await interaction.response.send_message(
+            embeds=[header_embed] + jadwal_embeds[:9]  # Discord max 10 embed per message
+        )
+
+        # Kalau lebih dari 9 jadwal, kirim sisanya
+        if len(jadwal_embeds) > 9:
+            sisa = jadwal_embeds[9:]
+            for chunk_start in range(0, len(sisa), 10):
+                chunk = sisa[chunk_start:chunk_start+10]
+                await interaction.followup.send(embeds=chunk)
+
+
+@bot.tree.command(name="jadwal_live", description="Buat jadwal live stream (bisa banyak sekaligus, misal seminggu)")
+async def jadwal_live_cmd(interaction: discord.Interaction):
+    await interaction.response.send_modal(JadwalMingguanModal())
 
 @bot.tree.command(name="tutup_periode", description="[ADMIN] Tutup periode aktif & umumkan pemenang")
 async def tutup_periode_cmd(interaction: discord.Interaction):
