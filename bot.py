@@ -673,18 +673,35 @@ async def submit_clip(interaction: discord.Interaction, url: str):
 
     save_db(db)
 
+    # Hitung progress bonus konsisten
+    total_clips_now = db["clippers"][did]["total_clips"]
+    active_konsisten = get_active_konsisten_tiers(db)
+    konsisten_now = calc_konsisten_hadiah(total_clips_now, db)
+    # Cari tier berikutnya
+    next_tier = None
+    for kt in sorted(active_konsisten, key=lambda x: x["min_clips"]):
+        if kt["min_clips"] > total_clips_now:
+            next_tier = kt
+            break
+
     embed = discord.Embed(
-        title="Clip Berhasil Disubmit!",
+        title="✅ Clip Berhasil Disubmit!",
         color=0x57F287,
         timestamp=datetime.now(timezone.utc)
     )
     embed.set_thumbnail(url=result.get("thumbnail", ""))
-    embed.add_field(name="Judul", value=result.get("title", "Unknown")[:80], inline=False)
-    embed.add_field(name="Views", value=fmt_views(views), inline=True)
-    embed.add_field(name=f"{tier['emoji']} Tier", value=tier["label"], inline=True)
-    embed.add_field(name="Estimasi Gaji", value=fmt_rp(gaji) if gaji > 0 else "Belum mencapai 100K", inline=True)
-    embed.add_field(name="Akun", value=f"@{matched_account['username']}", inline=True)
-    embed.add_field(name="Clip ID", value=f"#{clip_data['id']}", inline=True)
+    embed.add_field(name="🎬 Judul", value=result.get("title", "Unknown")[:80], inline=False)
+    embed.add_field(name="👁️ Views", value=fmt_views(views), inline=True)
+    embed.add_field(name=f"{tier['emoji']} Tier Gaji", value=tier["label"], inline=True)
+    embed.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji) if gaji > 0 else "Belum 100K", inline=True)
+    embed.add_field(name="🎬 Total Clip Kamu", value=f"{total_clips_now} clip", inline=True)
+    # Status bonus konsisten
+    if konsisten_now:
+        embed.add_field(name="🏅 Bonus Konsisten", value=f"{konsisten_now['label']} (+{fmt_rp(konsisten_now['hadiah'])})", inline=True)
+    elif next_tier:
+        sisa = next_tier["min_clips"] - total_clips_now
+        embed.add_field(name="🏅 Progress Bonus", value=f"**{sisa} clip lagi** untuk {next_tier['label']} (+{fmt_rp(next_tier['hadiah'])})", inline=True)
+    embed.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
     embed.set_footer(text=f"Submit oleh {interaction.user.display_name}")
 
     await interaction.followup.send(embed=embed)
@@ -788,16 +805,18 @@ async def panduan_clipper(interaction: discord.Interaction):
     embed1.add_field(name="📝 Step 1 — Daftar", value="`!daftar tiktok @username`\n`!daftar youtube NamaChannel`\n\nPendaftaran masuk antrian, **menunggu persetujuan admin**.", inline=False)
     embed1.add_field(name="✅ Step 2 — Tunggu Approval", value="Admin review pendaftaranmu.\nKamu dapat **notif DM** saat disetujui/ditolak.\nSetelah approved → otomatis dapat akses channel clipper.", inline=False)
     embed1.add_field(name="🎬 Step 3 — Submit Clip", value="`/submit url:https://tiktok.com/@user/video/xxx`\n\nBot otomatis verifikasi, ambil views, & hitung gaji.", inline=False)
+    active_tiers = get_active_gaji_tiers(db)
+    active_konsisten = get_active_konsisten_tiers(db)
     embed2 = discord.Embed(title="💰 Sistem Gaji & Bonus", color=0xFEE75C)
-    tabel = "\n".join(f"{t['emoji']} **{t['label']} views** → {fmt_rp(t['gaji'])}" for t in GAJI_TIERS if t["gaji"] > 0)
+    tabel = "\n".join(f"{t.get('emoji','⭐')} **{t['label']} views** → {fmt_rp(t['gaji'])}" for t in active_tiers if t["gaji"] > 0)
     embed2.add_field(name="📊 Gaji per Views", value=tabel, inline=False)
-    bonus = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in KONSISTEN_TIERS)
-    embed2.add_field(name="🏅 Bonus Konsisten", value=bonus, inline=False)
+    bonus_k = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in active_konsisten)
+    embed2.add_field(name="🏅 Bonus Konsisten", value=bonus_k, inline=False)
     embed2.add_field(name="⏰ Kapan Dibayar?", value="Gaji dibayar setelah admin approve.\nViews auto-update tiap **6 jam**.\nCek pending di `/profil`.", inline=False)
     embed3 = discord.Embed(title="📋 Command & Aturan", color=0x57F287)
     embed3.add_field(name="Command Clipper", value="`!daftar` `!tambah_akun` `/submit` `/profil`\n`/leaderboard` `/riwayat_gaji` `/info_gaji`\n`/update_views` `/panduan`", inline=False)
     embed3.add_field(name="⚠️ Aturan Penting", value="▸ Hanya submit video **milikmu sendiri**\n▸ Dilarang submit URL yang sama dua kali\n▸ **3 warning = auto blacklist**\n▸ Video harus **public** (tidak private)", inline=False)
-    await interaction.response.send_message(embeds=[embed1, embed2, embed3], ephemeral=True)
+    await interaction.response.send_message(embeds=[embed1, embed2, embed3])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2117,116 +2136,230 @@ async def info_gaji(interaction: discord.Interaction):
 
 EMOJI_TIERS = ["💎", "🥇", "🥈", "🥉", "🏅", "⭐", "✨"]
 
-@bot.tree.command(name="set_gaji", description="[ADMIN] Atur struktur gaji views (custom tiers)")
+def _parse_views_int(s: str) -> int:
+    return int(s.strip().replace(".", "").replace(",", "").replace("_", "").replace("K","000").replace("k","000").replace("M","000000").replace("m","000000"))
+
+def _make_gaji_label(views: int) -> str:
+    if views >= 1_000_000: return f"{views//1_000_000}M+"
+    if views >= 1_000: return f"{views//1_000}K+"
+    return f"{views}+"
+
+def _rebuild_gaji_tiers(tiers: list) -> list:
+    """Sort, label, emoji ulang setelah modifikasi."""
+    tiers = [t for t in tiers if t["min"] > 0]
+    tiers = sorted(tiers, key=lambda x: x["min"], reverse=True)
+    for i, t in enumerate(tiers):
+        t["label"] = _make_gaji_label(t["min"])
+        t["emoji"] = EMOJI_TIERS[i] if i < len(EMOJI_TIERS) else "⭐"
+    tiers.append({"min": 0, "gaji": 0, "label": f"< {_make_gaji_label(tiers[-1]['min']) if tiers else '0'}", "emoji": "⬜"})
+    return tiers
+
+
+@bot.tree.command(name="set_gaji", description="[ADMIN] Ubah gaji satu tier tertentu (tidak hapus tier lain)")
 @app_commands.describe(
-    tiers="Format: views:gaji, views:gaji, ... — Contoh: 1000000:700000, 500000:300000, 100000:50000"
+    views="Batas minimum views tier ini (contoh: 500000 atau 500.000)",
+    gaji="Nominal gaji dalam rupiah (contoh: 300000 atau 300.000)",
 )
-async def set_gaji_cmd(interaction: discord.Interaction, tiers: str):
+async def set_gaji_cmd(interaction: discord.Interaction, views: str, gaji: str):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
-
-    # Parse input
-    parsed = []
     try:
-        for part in tiers.split(","):
-            part = part.strip()
-            if not part: continue
-            views_str, gaji_str = part.split(":")
-            views_val = int(views_str.strip().replace(".", "").replace("_", ""))
-            gaji_val = int(gaji_str.strip().replace(".", "").replace("_", ""))
-            parsed.append({"min": views_val, "gaji": gaji_val})
+        views_val = _parse_views_int(views)
+        gaji_val = _parse_views_int(gaji)
     except Exception:
-        return await interaction.response.send_message(
-            "❌ Format salah!\n\nContoh yang benar:\n`1000000:700000, 500000:300000, 300000:150000, 100000:50000`\n\nAtau pakai titik sebagai pemisah ribuan:\n`1.000.000:700.000, 500.000:300.000`",
-            ephemeral=True
-        )
-
-    if not parsed:
-        return await interaction.response.send_message("❌ Tidak ada tier yang valid.", ephemeral=True)
-
-    # Sort descending dan tambah label + emoji
-    parsed = sorted(parsed, key=lambda x: x["min"], reverse=True)
-    for i, t in enumerate(parsed):
-        views = t["min"]
-        if views >= 1_000_000:
-            label = f"{views//1_000_000}M+"
-        elif views >= 1_000:
-            label = f"{views//1_000}K+"
-        else:
-            label = f"{views}+"
-        t["label"] = label
-        t["emoji"] = EMOJI_TIERS[i] if i < len(EMOJI_TIERS) else "⭐"
-
-    # Tambah tier 0 (tidak memenuhi minimum)
-    parsed.append({"min": 0, "gaji": 0, "label": f"< {fmt_views(parsed[-1]['min'])}", "emoji": "⬜"})
+        return await interaction.response.send_message("❌ Format angka salah. Contoh: views=`500000` gaji=`300000`", ephemeral=True)
 
     db = load_db()
-    db["settings"]["custom_gaji_tiers"] = parsed
+    current = list(db["settings"].get("custom_gaji_tiers") or GAJI_TIERS)
+    # Hapus tier 0 sentinel dulu
+    current = [t for t in current if t["min"] != 0]
+    # Update tier yang sama min-nya, atau tambah baru
+    found = False
+    for t in current:
+        if t["min"] == views_val:
+            t["gaji"] = gaji_val
+            found = True
+            break
+    if not found:
+        current.append({"min": views_val, "gaji": gaji_val})
+
+    current = _rebuild_gaji_tiers(current)
+    db["settings"]["custom_gaji_tiers"] = current
     save_db(db)
 
-    # Preview embed
-    embed = discord.Embed(
-        title="✅ Struktur Gaji Berhasil Diubah!",
-        color=0x57F287,
-        timestamp=datetime.now(timezone.utc)
-    )
-    preview = "\n".join(
-        f"{t['emoji']} **{t['label']} views** → {fmt_rp(t['gaji'])}"
-        for t in parsed if t["gaji"] > 0
-    )
-    embed.add_field(name="📊 Struktur Gaji Baru", value=preview, inline=False)
-    embed.set_footer(text=f"Diubah oleh {interaction.user.display_name} • Gunakan /reset_gaji untuk kembali ke default")
+    preview = "\n".join(f"{t['emoji']} **{t['label']} views** → {fmt_rp(t['gaji'])}" for t in current if t["gaji"] > 0)
+    embed = discord.Embed(title="✅ Tier Gaji Diupdate!", color=0x57F287, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name=f"{'✏️ Diubah' if found else '➕ Ditambahkan'}", value=f"**{_make_gaji_label(views_val)} views** → {fmt_rp(gaji_val)}", inline=False)
+    embed.add_field(name="📊 Semua Tier Gaji Sekarang", value=preview, inline=False)
+    embed.set_footer(text=f"Oleh {interaction.user.display_name} • /tambah_gaji untuk tambah tier baru • /reset_gaji untuk reset")
     await interaction.response.send_message(embed=embed)
-
     await send_log(interaction.guild, db, embed=discord.Embed(
-        title="💰 Struktur Gaji Diubah",
-        description=f"**Oleh:** {interaction.user.mention}\n**Tiers baru:** {tiers}",
+        title="💰 Tier Gaji Diubah",
+        description=f"**Oleh:** {interaction.user.mention}\n**Tier:** {_make_gaji_label(views_val)} → {fmt_rp(gaji_val)}",
         color=0xFEE75C, timestamp=datetime.now(timezone.utc)
     ))
 
 
-@bot.tree.command(name="set_bonus", description="[ADMIN] Atur bonus clipper konsisten")
+@bot.tree.command(name="tambah_gaji", description="[ADMIN] Tambah tier gaji baru tanpa hapus yang lain")
 @app_commands.describe(
-    tiers="Format: clips:hadiah, clips:hadiah — Contoh: 20:50000, 10:25000"
+    views="Batas minimum views (contoh: 750000)",
+    gaji="Nominal gaji rupiah (contoh: 400000)",
 )
-async def set_bonus_cmd(interaction: discord.Interaction, tiers: str):
+async def tambah_gaji_cmd(interaction: discord.Interaction, views: str, gaji: str):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
-
-    parsed = []
     try:
-        for part in tiers.split(","):
-            part = part.strip()
-            if not part: continue
-            clips_str, hadiah_str = part.split(":")
-            clips_val = int(clips_str.strip())
-            hadiah_val = int(hadiah_str.strip().replace(".", "").replace("_", ""))
-            parsed.append({"min_clips": clips_val, "hadiah": hadiah_val})
+        views_val = _parse_views_int(views)
+        gaji_val = _parse_views_int(gaji)
     except Exception:
-        return await interaction.response.send_message(
-            "❌ Format salah!\n\nContoh: `20:50000, 10:25000`\n(jumlah_clip:hadiah_rupiah)",
-            ephemeral=True
-        )
-
-    if not parsed:
-        return await interaction.response.send_message("❌ Tidak ada tier yang valid.", ephemeral=True)
-
-    parsed = sorted(parsed, key=lambda x: x["min_clips"], reverse=True)
-    medals = ["🥇", "🥈", "🥉", "🏅", "⭐"]
-    labels = ["Super Konsisten", "Konsisten", "Cukup Konsisten", "Aktif", "Pemula"]
-    for i, t in enumerate(parsed):
-        m = medals[i] if i < len(medals) else "⭐"
-        l = labels[i] if i < len(labels) else f"Level {i+1}"
-        t["label"] = f"{m} {l}"
+        return await interaction.response.send_message("❌ Format angka salah.", ephemeral=True)
 
     db = load_db()
-    db["settings"]["custom_konsisten_tiers"] = parsed
+    current = list(db["settings"].get("custom_gaji_tiers") or GAJI_TIERS)
+    current = [t for t in current if t["min"] != 0]
+    # Cek duplikat
+    if any(t["min"] == views_val for t in current):
+        return await interaction.response.send_message(
+            f"⚠️ Tier **{_make_gaji_label(views_val)}** sudah ada. Gunakan `/set_gaji` untuk mengubah nilainya.",
+            ephemeral=True
+        )
+    current.append({"min": views_val, "gaji": gaji_val})
+    current = _rebuild_gaji_tiers(current)
+    db["settings"]["custom_gaji_tiers"] = current
     save_db(db)
 
-    embed = discord.Embed(title="✅ Bonus Konsisten Berhasil Diubah!", color=0x57F287, timestamp=datetime.now(timezone.utc))
-    preview = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in parsed)
-    embed.add_field(name="🏅 Struktur Bonus Baru", value=preview, inline=False)
-    embed.set_footer(text=f"Diubah oleh {interaction.user.display_name} • /reset_gaji untuk kembali ke default")
+    preview = "\n".join(f"{t['emoji']} **{t['label']} views** → {fmt_rp(t['gaji'])}" for t in current if t["gaji"] > 0)
+    embed = discord.Embed(title="➕ Tier Gaji Baru Ditambahkan!", color=0x57F287, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Tier Baru", value=f"**{_make_gaji_label(views_val)} views** → {fmt_rp(gaji_val)}", inline=False)
+    embed.add_field(name="📊 Semua Tier Gaji Sekarang", value=preview, inline=False)
+    embed.set_footer(text=f"Oleh {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="hapus_tier_gaji", description="[ADMIN] Hapus satu tier gaji tertentu")
+@app_commands.describe(views="Batas views tier yang ingin dihapus (contoh: 500000)")
+async def hapus_tier_gaji_cmd(interaction: discord.Interaction, views: str):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    try:
+        views_val = _parse_views_int(views)
+    except Exception:
+        return await interaction.response.send_message("❌ Format angka salah.", ephemeral=True)
+
+    db = load_db()
+    current = list(db["settings"].get("custom_gaji_tiers") or GAJI_TIERS)
+    current = [t for t in current if t["min"] != 0]
+    new = [t for t in current if t["min"] != views_val]
+    if len(new) == len(current):
+        return await interaction.response.send_message(f"❌ Tier **{_make_gaji_label(views_val)}** tidak ditemukan.", ephemeral=True)
+    if not new:
+        return await interaction.response.send_message("❌ Tidak bisa hapus semua tier.", ephemeral=True)
+    new = _rebuild_gaji_tiers(new)
+    db["settings"]["custom_gaji_tiers"] = new
+    save_db(db)
+
+    preview = "\n".join(f"{t['emoji']} **{t['label']}** → {fmt_rp(t['gaji'])}" for t in new if t["gaji"] > 0)
+    embed = discord.Embed(title="🗑️ Tier Gaji Dihapus", color=0xED4245, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Dihapus", value=f"Tier **{_make_gaji_label(views_val)}**", inline=False)
+    embed.add_field(name="📊 Tier Tersisa", value=preview, inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+def _rebuild_konsisten_tiers(tiers: list) -> list:
+    medals = ["🥇", "🥈", "🥉", "🏅", "⭐"]
+    labels = ["Super Konsisten", "Konsisten", "Cukup Konsisten", "Aktif", "Pemula"]
+    tiers = sorted(tiers, key=lambda x: x["min_clips"], reverse=True)
+    for i, t in enumerate(tiers):
+        t["label"] = f"{medals[i] if i < len(medals) else '⭐'} {labels[i] if i < len(labels) else f'Level {i+1}'}"
+    return tiers
+
+
+@bot.tree.command(name="set_bonus", description="[ADMIN] Ubah bonus satu tier konsisten (tidak hapus tier lain)")
+@app_commands.describe(
+    clips="Jumlah minimum clip (contoh: 20)",
+    hadiah="Nominal bonus rupiah (contoh: 50000)",
+)
+async def set_bonus_cmd(interaction: discord.Interaction, clips: int, hadiah: str):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    try:
+        hadiah_val = _parse_views_int(hadiah)
+    except Exception:
+        return await interaction.response.send_message("❌ Format hadiah salah. Contoh: `50000`", ephemeral=True)
+
+    db = load_db()
+    current = list(db["settings"].get("custom_konsisten_tiers") or KONSISTEN_TIERS)
+    found = False
+    for t in current:
+        if t["min_clips"] == clips:
+            t["hadiah"] = hadiah_val
+            found = True
+            break
+    if not found:
+        current.append({"min_clips": clips, "hadiah": hadiah_val})
+    current = _rebuild_konsisten_tiers(current)
+    db["settings"]["custom_konsisten_tiers"] = current
+    save_db(db)
+
+    preview = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in current)
+    embed = discord.Embed(title="✅ Bonus Konsisten Diupdate!", color=0x57F287, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name=f"{'✏️ Diubah' if found else '➕ Ditambahkan'}", value=f"**{clips}+ clip** → +{fmt_rp(hadiah_val)}", inline=False)
+    embed.add_field(name="🏅 Semua Tier Bonus Sekarang", value=preview, inline=False)
+    embed.set_footer(text=f"Oleh {interaction.user.display_name} • /tambah_bonus untuk tambah tier baru")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="tambah_bonus", description="[ADMIN] Tambah tier bonus konsisten baru")
+@app_commands.describe(
+    clips="Jumlah minimum clip untuk dapat bonus (contoh: 30)",
+    hadiah="Nominal bonus rupiah (contoh: 75000)",
+)
+async def tambah_bonus_cmd(interaction: discord.Interaction, clips: int, hadiah: str):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    try:
+        hadiah_val = _parse_views_int(hadiah)
+    except Exception:
+        return await interaction.response.send_message("❌ Format hadiah salah.", ephemeral=True)
+
+    db = load_db()
+    current = list(db["settings"].get("custom_konsisten_tiers") or KONSISTEN_TIERS)
+    if any(t["min_clips"] == clips for t in current):
+        return await interaction.response.send_message(
+            f"⚠️ Tier **{clips}+ clip** sudah ada. Gunakan `/set_bonus` untuk mengubah nilainya.",
+            ephemeral=True
+        )
+    current.append({"min_clips": clips, "hadiah": hadiah_val})
+    current = _rebuild_konsisten_tiers(current)
+    db["settings"]["custom_konsisten_tiers"] = current
+    save_db(db)
+
+    preview = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in current)
+    embed = discord.Embed(title="➕ Tier Bonus Baru Ditambahkan!", color=0x57F287, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Tier Baru", value=f"**{clips}+ clip** → +{fmt_rp(hadiah_val)}", inline=False)
+    embed.add_field(name="🏅 Semua Tier Bonus Sekarang", value=preview, inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="hapus_tier_bonus", description="[ADMIN] Hapus satu tier bonus konsisten")
+@app_commands.describe(clips="Jumlah minimum clip tier yang ingin dihapus")
+async def hapus_tier_bonus_cmd(interaction: discord.Interaction, clips: int):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    db = load_db()
+    current = list(db["settings"].get("custom_konsisten_tiers") or KONSISTEN_TIERS)
+    new = [t for t in current if t["min_clips"] != clips]
+    if len(new) == len(current):
+        return await interaction.response.send_message(f"❌ Tier **{clips}+ clip** tidak ditemukan.", ephemeral=True)
+    if not new:
+        return await interaction.response.send_message("❌ Tidak bisa hapus semua tier.", ephemeral=True)
+    new = _rebuild_konsisten_tiers(new)
+    db["settings"]["custom_konsisten_tiers"] = new
+    save_db(db)
+    preview = "\n".join(f"**{t['label']}** ({t['min_clips']}+ clip) → +{fmt_rp(t['hadiah'])}" for t in new)
+    embed = discord.Embed(title="🗑️ Tier Bonus Dihapus", color=0xED4245, timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Dihapus", value=f"Tier **{clips}+ clip**", inline=False)
+    embed.add_field(name="🏅 Tier Tersisa", value=preview or "-", inline=False)
     await interaction.response.send_message(embed=embed)
 
 
