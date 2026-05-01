@@ -48,6 +48,8 @@ DEFAULT_SETTINGS = {
     "admin_role_name": "Admin",
     "rekap_hari": 1,
     "periode_hari": 30,
+    "custom_gaji_tiers": None,      # None = pakai default GAJI_TIERS
+    "custom_konsisten_tiers": None, # None = pakai default KONSISTEN_TIERS
 }
 
 DEFAULT_PERIODE = {
@@ -357,18 +359,36 @@ def update_ticket_data(db, ticket_id: int, data: dict) -> dict:
     save_db(db)
     return db["tickets"][tid]
 
-def calc_gaji(views: int) -> int:
-    for t in GAJI_TIERS:
+def get_active_gaji_tiers(db=None) -> list:
+    """Ambil tiers aktif — custom dari DB kalau ada, default kalau tidak."""
+    if db:
+        custom = db.get("settings", {}).get("custom_gaji_tiers")
+        if custom:
+            return sorted(custom, key=lambda x: x["min"], reverse=True)
+    return GAJI_TIERS
+
+def get_active_konsisten_tiers(db=None) -> list:
+    if db:
+        custom = db.get("settings", {}).get("custom_konsisten_tiers")
+        if custom:
+            return sorted(custom, key=lambda x: x["min_clips"], reverse=True)
+    return KONSISTEN_TIERS
+
+def calc_gaji(views: int, db=None) -> int:
+    tiers = get_active_gaji_tiers(db)
+    for t in tiers:
         if views >= t["min"]: return t["gaji"]
     return 0
 
-def get_tier(views: int) -> dict:
-    for t in GAJI_TIERS:
+def get_tier(views: int, db=None) -> dict:
+    tiers = get_active_gaji_tiers(db)
+    for t in tiers:
         if views >= t["min"]: return t
-    return GAJI_TIERS[-1]
+    return tiers[-1]
 
-def calc_konsisten_hadiah(clip_count: int):
-    for t in KONSISTEN_TIERS:
+def calc_konsisten_hadiah(clip_count: int, db=None):
+    tiers = get_active_konsisten_tiers(db)
+    for t in tiers:
         if clip_count >= t["min_clips"]: return t
     return None
 
