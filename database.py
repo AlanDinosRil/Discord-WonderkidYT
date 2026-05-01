@@ -464,6 +464,87 @@ def is_duplicate_url(db, url: str) -> bool:
     u = url.strip().rstrip("/").lower()
     return any(c.get("url", "").strip().rstrip("/").lower() == u for c in db["clips"])
 
+
+def get_clip_by_id(db, clip_id: int):
+    """Get clip by ID"""
+    return next((c for c in db["clips"] if c["id"] == clip_id), None)
+
+
+def get_clips_by_user(db, discord_id: str) -> list:
+    """Get all clips by a user"""
+    return [c for c in db["clips"] if c["discord_id"] == str(discord_id)]
+
+
+def delete_clip(db, clip_id: int, deleted_by: str = None) -> dict:
+    """
+    Delete a clip and update clipper stats.
+    Returns the deleted clip data or None if not found.
+    """
+    clip = get_clip_by_id(db, clip_id)
+    if not clip:
+        return None
+    
+    # Remove from clips list
+    db["clips"] = [c for c in db["clips"] if c["id"] != clip_id]
+    
+    # Update clipper stats
+    did = clip["discord_id"]
+    if did in db["clippers"]:
+        db["clippers"][did]["total_clips"] = max(0, db["clippers"][did]["total_clips"] - 1)
+        db["clippers"][did]["total_views"] = max(0, db["clippers"][did]["total_views"] - clip["views"])
+        if not clip.get("gaji_paid", False):
+            db["clippers"][did]["pending_gaji"] = max(0, db["clippers"][did]["pending_gaji"] - clip.get("gaji", 0))
+    
+    # Update periode stats if active
+    if periode_aktif(db):
+        p = db["periode"]
+        if did in p["clips_periode"]:
+            p["clips_periode"][did] = max(0, p["clips_periode"].get(did, 0) - 1)
+        if did in p["views_periode"]:
+            p["views_periode"][did] = max(0, p["views_periode"].get(did, 0) - clip["views"])
+    
+    save_db(db)
+    return clip
+
+
+def update_clip(db, clip_id: int, updates: dict) -> dict:
+    """
+    Update clip data. Handles views/gaji changes with stat adjustments.
+    Returns updated clip or None if not found.
+    """
+    clip = get_clip_by_id(db, clip_id)
+    if not clip:
+        return None
+    
+    did = clip["discord_id"]
+    old_views = clip["views"]
+    old_gaji = clip.get("gaji", 0)
+    was_paid = clip.get("gaji_paid", False)
+    
+    # Apply updates
+    for key, value in updates.items():
+        clip[key] = value
+    clip["last_updated"] = now_iso()
+    
+    # Recalculate stats if views changed
+    if "views" in updates and did in db["clippers"]:
+        views_diff = updates["views"] - old_views
+        db["clippers"][did]["total_views"] += views_diff
+        
+        # Update periode if active
+        if periode_aktif(db):
+            p = db["periode"]
+            if did in p["views_periode"]:
+                p["views_periode"][did] = max(0, p["views_periode"].get(did, 0) + views_diff)
+    
+    # Handle gaji changes
+    if "gaji" in updates and did in db["clippers"] and not was_paid:
+        gaji_diff = updates["gaji"] - old_gaji
+        db["clippers"][did]["pending_gaji"] += gaji_diff
+    
+    save_db(db)
+    return clip
+
 def check_account_ownership(db, discord_id: str, username: str, platform: str) -> bool:
     clipper = get_clipper(db, discord_id)
     if not clipper: return False
