@@ -23,6 +23,8 @@ from database import (
     # Ticket system
     create_ticket, get_ticket, get_user_tickets, get_open_tickets,
     update_ticket_status, update_ticket_data,
+    # Clip management
+    get_clip_by_id, get_clips_by_user, delete_clip, update_clip,
 )
 from views_fetcher import fetch_views
 from verify_clip import verify_clip
@@ -129,11 +131,42 @@ async def on_ready():
     print(f"[BOT] {bot.user} online!")
     try:
         synced = await bot.tree.sync()
-        print(f"[BOT] {len(synced)} commands synced")
+        print(f"[BOT] {len(synced)} commands synced globally")
+        # Print all registered commands for debugging
+        for cmd in synced:
+            print(f"[BOT] - /{cmd.name}")
     except Exception as e:
         print(f"[BOT] Sync error: {e}")
     auto_update_views.start()
     weekly_recap.start()
+
+
+# ── FORCE SYNC COMMAND (untuk admin) ─────────────────────────────────────────
+
+@bot.command(name="sync")
+async def force_sync(ctx):
+    """Force sync slash commands - admin only"""
+    if not is_admin(ctx.author):
+        return await ctx.send("Hanya admin yang bisa sync commands.")
+    
+    await ctx.send("Syncing commands...")
+    try:
+        # Sync to current guild (instant) and globally
+        if ctx.guild:
+            bot.tree.copy_global_to(guild=ctx.guild)
+            guild_synced = await bot.tree.sync(guild=ctx.guild)
+            print(f"[BOT] {len(guild_synced)} commands synced to guild {ctx.guild.name}")
+        
+        global_synced = await bot.tree.sync()
+        print(f"[BOT] {len(global_synced)} commands synced globally")
+        
+        # List all commands
+        cmd_list = "\n".join([f"- /{cmd.name}" for cmd in global_synced])
+        await ctx.send(f"Synced {len(global_synced)} commands!\n```\n{cmd_list}\n```")
+    except Exception as e:
+        await ctx.send(f"Sync error: {e}")
+        print(f"[BOT] Sync error: {e}")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FITUR 1 — !daftar dengan sistem approval (butuh persetujuan admin)
@@ -345,7 +378,7 @@ async def add_account(interaction: discord.Interaction, platform: str, username:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN — Approve & Reject Registration
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════��══════════════════════════════════════
 
 @bot.tree.command(name="approve", description="[ADMIN] Setujui pendaftaran clipper")
 @app_commands.describe(member="User yang pendaftarannya disetujui")
@@ -821,7 +854,7 @@ async def panduan_clipper(interaction: discord.Interaction):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FITUR 3 — /profil dengan multi-akun display
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════���═══════════════════
 
 @bot.tree.command(name="profil", description="Lihat profil dan statistik clipper")
 @app_commands.describe(member="Profil clipper lain (opsional)")
@@ -915,15 +948,15 @@ async def help_cmd(interaction: discord.Interaction):
         name="👤 UNTUK SEMUA CLIPPER",
         value=(
             "**`!daftar <platform> <@username>`** - Daftar sebagai clipper\n"
-            "Contoh: `!daftar tiktok @myusername`\n\n"
             "**`/add <platform> <@username>`** - Tambah akun baru\n"
-            "Contoh: `/add youtube @mychannel`\n\n"
-            "**`/akun`** - Lihat semua akun kamu & akun pending\n\n"
+            "**`/akun`** - Lihat semua akun kamu & akun pending\n"
             "**`/submit <clip_link>`** - Submit clip untuk review\n"
-            "Contoh: `/submit https://tiktok.com/video/xxx`\n\n"
-            "**`/tiket`** - Buat tiket klaim reward (nomor rekening, WA, dll)\n\n"
-            "**`/tiket_saya`** - Lihat status tiket klaim kamu\n\n"
-            "**`/gaji`** - Lihat gaji & tier kamu"
+            "**`/clip_saya`** - Lihat semua clip yang sudah disubmit\n"
+            "**`/hapus_clip <id>`** - Hapus clip kamu (pending only)\n"
+            "**`/tiket`** - Buat tiket klaim reward\n"
+            "**`/tiket_saya`** - Lihat status tiket kamu\n"
+            "**`/profil`** - Lihat profil & statistik kamu\n"
+            "**`/stats`** - Lihat statistik global sistem"
         ),
         inline=False
     )
@@ -933,18 +966,19 @@ async def help_cmd(interaction: discord.Interaction):
         embed.add_field(
             name="🔨 UNTUK ADMIN",
             value=(
-                "**`/setup <channels>`** - Setup channel bot (clipper, gaji, rekap, log)\n\n"
-                "**`/pending`** - Lihat semua pendaftaran yang menunggu\n\n"
-                "**`/approve @user`** - Setujui pendaftaran clipper\n\n"
-                "**`/reject @user <alasan>`** - Tolak pendaftaran clipper\n\n"
-                "**`/bayar @user <catatan>`** - Bayar gaji clipper (otomatis update tiket)\n\n"
-                "**`/tiket_list`** - Lihat semua tiket klaim yang masuk\n\n"
-                "**`/tiket_proses <tiket_id> <status>`** - Update status tiket\n\n"
-                "**`/verify <link> <approve/reject>`** - Verify clip yang di-submit\n\n"
-                "**`/strike @user <alasan>`** - Beri warning ke clipper\n\n"
-                "**`/blacklist @user <alasan>`** - Blacklist clipper\n\n"
-                "**`/info_gaji`** - Lihat info gaji tier & konsisten\n\n"
-                "**`/leaderboard`** - Lihat leaderboard clipper"
+                "**`/setup`** - Setup channel bot\n"
+                "**`/pending`** - Lihat pendaftaran menunggu\n"
+                "**`/approve @user`** - Setujui pendaftaran\n"
+                "**`/reject @user`** - Tolak pendaftaran\n"
+                "**`/admin_submit @user <url>`** - Submit atas nama clipper\n"
+                "**`/edit_clip <id>`** - Edit data clip\n"
+                "**`/hapus_clip <id>`** - Hapus clip (termasuk paid)\n"
+                "**`/bayar @user`** - Bayar gaji clipper\n"
+                "**`/tiket_list`** - Lihat tiket klaim\n"
+                "**`/tiket_proses <id>`** - Update tiket\n"
+                "**`/warning @user`** - Beri warning\n"
+                "**`/blacklist @user`** - Blacklist clipper\n"
+                "**`/info_gaji`** - Lihat/edit tier gaji"
             ),
             inline=False
         )
@@ -963,6 +997,283 @@ async def help_cmd(interaction: discord.Interaction):
     
     embed.set_footer(text="Ketik /help anytime untuk bantuan")
     await interaction.response.send_message(embed=embed)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FITUR — /clip_saya untuk lihat semua clip yang sudah disubmit
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="clip_saya", description="Lihat semua clip yang sudah kamu submit")
+@app_commands.describe(
+    page="Halaman (default: 1)",
+    member="Lihat clip user lain (admin only)"
+)
+async def clip_saya(interaction: discord.Interaction, page: int = 1, member: discord.Member = None):
+    db = load_db()
+    
+    # Admin bisa lihat clip user lain
+    if member and not is_admin(interaction.user):
+        return await interaction.response.send_message("Hanya admin yang bisa lihat clip user lain.", ephemeral=True)
+    
+    target = member or interaction.user
+    did = str(target.id)
+    clips = get_clips_by_user(db, did)
+    
+    if not clips:
+        return await interaction.response.send_message(
+            f"{'Kamu' if not member else target.display_name} belum punya clip yang disubmit.", 
+            ephemeral=True
+        )
+    
+    # Sort by newest first
+    clips = sorted(clips, key=lambda x: x.get("submitted_at", ""), reverse=True)
+    
+    # Pagination
+    per_page = 5
+    total_pages = (len(clips) + per_page - 1) // per_page
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    page_clips = clips[start:start + per_page]
+    
+    embed = discord.Embed(
+        title=f"Clip {'Kamu' if not member else target.display_name} ({len(clips)} total)",
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    for clip in page_clips:
+        status = "Paid" if clip.get("gaji_paid") else "Pending"
+        platform_icon = "tiktok" if clip.get("platform") == "tiktok" else "youtube"
+        submitted = clip.get("submitted_at", "")[:10]
+        
+        embed.add_field(
+            name=f"#{clip['id']} | {fmt_views(clip['views'])} views | {fmt_rp(clip.get('gaji', 0))} ({status})",
+            value=(
+                f"**Platform:** {platform_icon.title()} (@{clip.get('account_username', '?')})\n"
+                f"**Judul:** {clip.get('title', 'Unknown')[:50]}...\n"
+                f"**Submitted:** {submitted}\n"
+                f"[Link Video]({clip['url']})"
+            ),
+            inline=False
+        )
+    
+    embed.set_footer(text=f"Halaman {page}/{total_pages} | Gunakan /clip_saya page:<nomor> untuk halaman lain")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FITUR — /hapus_clip untuk hapus clip
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="hapus_clip", description="Hapus clip yang sudah disubmit")
+@app_commands.describe(
+    clip_id="ID clip yang mau dihapus (lihat di /clip_saya)",
+    alasan="Alasan penghapusan (opsional)"
+)
+async def hapus_clip(interaction: discord.Interaction, clip_id: int, alasan: str = ""):
+    db = load_db()
+    did = str(interaction.user.id)
+    
+    clip = get_clip_by_id(db, clip_id)
+    if not clip:
+        return await interaction.response.send_message(f"Clip #{clip_id} tidak ditemukan.", ephemeral=True)
+    
+    # Check ownership (clipper bisa hapus clipnya sendiri, admin bisa hapus semua)
+    is_owner = clip["discord_id"] == did
+    is_admin_user = is_admin(interaction.user)
+    
+    if not is_owner and not is_admin_user:
+        return await interaction.response.send_message(
+            f"Kamu tidak bisa menghapus clip milik orang lain. Clip #{clip_id} milik <@{clip['discord_id']}>.",
+            ephemeral=True
+        )
+    
+    # Check if already paid (only admin can delete paid clips)
+    if clip.get("gaji_paid") and not is_admin_user:
+        return await interaction.response.send_message(
+            "Clip yang sudah dibayar tidak bisa dihapus. Hubungi admin jika ada masalah.",
+            ephemeral=True
+        )
+    
+    # Delete the clip
+    deleted = delete_clip(db, clip_id, str(interaction.user))
+    
+    embed = discord.Embed(
+        title=f"Clip #{clip_id} Dihapus",
+        color=0xED4245,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Judul", value=deleted.get("title", "Unknown")[:50], inline=False)
+    embed.add_field(name="Views", value=fmt_views(deleted["views"]), inline=True)
+    embed.add_field(name="Gaji", value=fmt_rp(deleted.get("gaji", 0)), inline=True)
+    embed.add_field(name="Status", value="Sudah Paid" if deleted.get("gaji_paid") else "Pending", inline=True)
+    embed.add_field(name="Dihapus oleh", value=interaction.user.mention, inline=True)
+    if alasan:
+        embed.add_field(name="Alasan", value=alasan, inline=False)
+    embed.set_footer(text="Stats clipper sudah diupdate otomatis")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=not is_admin_user)
+    
+    # Log to admin channel
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="Clip Dihapus",
+        description=(
+            f"**Clip ID:** #{clip_id}\n"
+            f"**Pemilik:** <@{deleted['discord_id']}>\n"
+            f"**Dihapus oleh:** {interaction.user.mention}\n"
+            f"**Views:** {fmt_views(deleted['views'])}\n"
+            f"**Gaji:** {fmt_rp(deleted.get('gaji', 0))}\n"
+            f"**Alasan:** {alasan or 'Tidak disebutkan'}"
+        ),
+        color=0xED4245,
+        timestamp=datetime.now(timezone.utc)
+    ))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FITUR — /edit_clip (ADMIN) untuk edit clip
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="edit_clip", description="[ADMIN] Edit data clip")
+@app_commands.describe(
+    clip_id="ID clip yang mau diedit",
+    views="Views baru (opsional)",
+    gaji="Gaji baru (opsional)",
+    paid="Status pembayaran (opsional)"
+)
+@app_commands.choices(paid=[
+    app_commands.Choice(name="Sudah dibayar", value="true"),
+    app_commands.Choice(name="Belum dibayar", value="false"),
+])
+async def edit_clip_cmd(
+    interaction: discord.Interaction, 
+    clip_id: int, 
+    views: int = None, 
+    gaji: int = None,
+    paid: app_commands.Choice[str] = None
+):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("Hanya admin.", ephemeral=True)
+    
+    db = load_db()
+    clip = get_clip_by_id(db, clip_id)
+    
+    if not clip:
+        return await interaction.response.send_message(f"Clip #{clip_id} tidak ditemukan.", ephemeral=True)
+    
+    updates = {}
+    changes = []
+    
+    if views is not None:
+        old_views = clip["views"]
+        updates["views"] = views
+        changes.append(f"Views: {fmt_views(old_views)} -> {fmt_views(views)}")
+    
+    if gaji is not None:
+        old_gaji = clip.get("gaji", 0)
+        updates["gaji"] = gaji
+        changes.append(f"Gaji: {fmt_rp(old_gaji)} -> {fmt_rp(gaji)}")
+    
+    if paid is not None:
+        old_paid = clip.get("gaji_paid", False)
+        new_paid = paid.value == "true"
+        updates["gaji_paid"] = new_paid
+        changes.append(f"Status: {'Paid' if old_paid else 'Pending'} -> {'Paid' if new_paid else 'Pending'}")
+    
+    if not updates:
+        return await interaction.response.send_message("Tidak ada yang diubah.", ephemeral=True)
+    
+    updated = update_clip(db, clip_id, updates)
+    
+    embed = discord.Embed(
+        title=f"Clip #{clip_id} Diupdate",
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="Pemilik", value=f"<@{clip['discord_id']}>", inline=True)
+    embed.add_field(name="Perubahan", value="\n".join(changes), inline=False)
+    embed.set_footer(text=f"Diedit oleh {interaction.user.display_name}")
+    
+    await interaction.response.send_message(embed=embed)
+    
+    # Log
+    await send_log(interaction.guild, db, embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FITUR — /stats untuk statistik global
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="stats", description="Lihat statistik global sistem clipper")
+async def stats_cmd(interaction: discord.Interaction):
+    db = load_db()
+    
+    clippers = list(db["clippers"].values())
+    clips = db["clips"]
+    
+    total_clippers = len(clippers)
+    active_clippers = len([c for c in clippers if c.get("active", True)])
+    total_clips = len(clips)
+    total_views = sum(c.get("total_views", 0) for c in clippers)
+    total_gaji_paid = sum(c.get("total_gaji", 0) for c in clippers)
+    total_pending = sum(c.get("pending_gaji", 0) for c in clippers)
+    
+    # Clips this week
+    now = datetime.now(timezone.utc)
+    week_ago = (now - timedelta(days=7)).isoformat()
+    clips_this_week = [c for c in clips if c.get("submitted_at", "") >= week_ago]
+    views_this_week = sum(c["views"] for c in clips_this_week)
+    
+    # Clips this month
+    month_ago = (now - timedelta(days=30)).isoformat()
+    clips_this_month = [c for c in clips if c.get("submitted_at", "") >= month_ago]
+    views_this_month = sum(c["views"] for c in clips_this_month)
+    
+    # Platform breakdown
+    tiktok_clips = len([c for c in clips if c.get("platform") == "tiktok"])
+    youtube_clips = len([c for c in clips if c.get("platform") == "youtube"])
+    
+    # Top performer
+    top_clipper = max(clippers, key=lambda x: x.get("total_views", 0)) if clippers else None
+    
+    embed = discord.Embed(
+        title="Statistik Global Clipper System",
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    embed.add_field(name="Total Clipper", value=f"{active_clippers} aktif / {total_clippers} total", inline=True)
+    embed.add_field(name="Total Clip", value=str(total_clips), inline=True)
+    embed.add_field(name="Total Views", value=fmt_views(total_views), inline=True)
+    
+    embed.add_field(name="Gaji Sudah Dibayar", value=fmt_rp(total_gaji_paid), inline=True)
+    embed.add_field(name="Gaji Pending", value=fmt_rp(total_pending), inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    
+    embed.add_field(name="Clip Minggu Ini", value=f"{len(clips_this_week)} clip ({fmt_views(views_this_week)} views)", inline=True)
+    embed.add_field(name="Clip Bulan Ini", value=f"{len(clips_this_month)} clip ({fmt_views(views_this_month)} views)", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    
+    embed.add_field(name="Platform", value=f"TikTok: {tiktok_clips}\nYouTube: {youtube_clips}", inline=True)
+    
+    if top_clipper:
+        embed.add_field(
+            name="Top Clipper (All Time)", 
+            value=f"**{top_clipper['display_name']}**\n{fmt_views(top_clipper['total_views'])} views | {top_clipper['total_clips']} clips", 
+            inline=True
+        )
+    
+    # Periode info
+    if periode_aktif(db):
+        p = db["periode"]
+        embed.add_field(
+            name="Periode Aktif", 
+            value=f"**{p['nama']}**\n{p['mulai'][:10]} - {p['selesai'][:10]}", 
+            inline=False
+        )
+    
+    embed.set_footer(text="Campaign Clipper System")
+    await interaction.response.send_message(embed=embed)
+
 
 # ════════════════════════════════════───═════════════════════════════════════════
 # FITUR — /akun untuk manage akun sendiri
@@ -2130,7 +2441,7 @@ async def info_gaji(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════��════════════════════════════════════
 # CUSTOM GAJI TIERS — Admin bisa ubah struktur gaji tanpa edit file
 # ══════════════════════════════════════════════════════════════════════════════
 
