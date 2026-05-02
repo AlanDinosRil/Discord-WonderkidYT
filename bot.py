@@ -168,7 +168,7 @@ async def force_sync(ctx):
         print(f"[BOT] Sync error: {e}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════���═══
 # FITUR 1 — !daftar dengan sistem approval (butuh persetujuan admin)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -642,29 +642,44 @@ async def submit_clip(interaction: discord.Interaction, url: str):
             verify_result = verify  # Keep first result for error message
     
     if not matched_account:
-        # Beri warning jika verifikasi gagal (bukan unknown)
-        if verify_result and verify_result["confidence"] != "unknown":
+        # Jika confidence unknown, jangan beri warning - mungkin masalah teknis
+        accounts_list = ", ".join([f"@{acc['username']}" for acc in accounts])
+        found_user = verify_result.get('found_username', '') if verify_result else ''
+        
+        if verify_result and verify_result["confidence"] != "unknown" and found_user:
+            # Username terdeteksi tapi tidak cocok - ini curiga
             warn_count = add_warning(db, did, f"Submit video bukan miliknya: {url}", "System")
             warn_msg = (
                 f"\n\nWarning **{warn_count}/{MAX_WARNINGS}** diberikan."
                 + ("\n**Auto-blacklist setelah 1 warning lagi!**" if warn_count == MAX_WARNINGS - 1 else "")
                 + ("\n**Kamu telah di-blacklist!**" if warn_count >= MAX_WARNINGS else "")
             )
+            embed = discord.Embed(
+                title="Verifikasi Gagal - Username Tidak Cocok",
+                description=(
+                    f"Video ini **tidak cocok** dengan akun yang kamu daftarkan.\n\n"
+                    f"**Akun {detected_platform.title()} Terdaftar:** {accounts_list}\n"
+                    f"**Username di Video:** @{found_user}\n"
+                    f"{warn_msg}"
+                ),
+                color=0xED4245
+            )
         else:
-            warn_msg = "\n\nTidak bisa memverifikasi kepemilikan (video mungkin private)."
-        
-        accounts_list = ", ".join([f"@{acc['username']}" for acc in accounts])
-        embed = discord.Embed(
-            title="Verifikasi Gagal",
-            description=(
-                f"Video ini **tidak cocok** dengan akun yang kamu daftarkan.\n\n"
-                f"**Akun {detected_platform.title()} Terdaftar:** {accounts_list}\n"
-                f"**Ditemukan:** @{verify_result.get('found_username', '?')}\n"
-                f"**Detail:** {verify_result['reason']}"
-                f"{warn_msg}"
-            ),
-            color=0xED4245
-        )
+            # Tidak bisa detect username - kemungkinan masalah teknis
+            embed = discord.Embed(
+                title="Verifikasi Gagal - Tidak Bisa Mendeteksi",
+                description=(
+                    f"Bot tidak bisa memverifikasi kepemilikan video ini.\n\n"
+                    f"**Akun {detected_platform.title()} Terdaftar:** {accounts_list}\n"
+                    f"**Kemungkinan penyebab:**\n"
+                    f"- Video private/restricted\n"
+                    f"- TikTok memblokir request\n"
+                    f"- Format URL tidak dikenali\n\n"
+                    f"**Solusi:** Minta admin untuk submit dengan `/admin_submit`\n"
+                    f"atau coba kirim link full (bukan short link)."
+                ),
+                color=0xFEE75C
+            )
         return await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Fetch views ──────────────��────────────────────────────────────────────
@@ -724,7 +739,7 @@ async def submit_clip(interaction: discord.Interaction, url: str):
     )
     embed.set_thumbnail(url=result.get("thumbnail", ""))
     embed.add_field(name="🎬 Judul", value=result.get("title", "Unknown")[:80], inline=False)
-    embed.add_field(name="👁️ Views", value=fmt_views(views), inline=True)
+    embed.add_field(name="��️ Views", value=fmt_views(views), inline=True)
     embed.add_field(name=f"{tier['emoji']} Tier Gaji", value=tier["label"], inline=True)
     embed.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji) if gaji > 0 else "Belum 100K", inline=True)
     embed.add_field(name="🎬 Total Clip Kamu", value=f"{total_clips_now} clip", inline=True)
@@ -1000,7 +1015,7 @@ async def help_cmd(interaction: discord.Interaction):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FITUR — /clip_saya untuk lihat semua clip yang sudah disubmit
-# ══════════════════════════════════════════════════════════════════════════════
+# ��═════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="clip_saya", description="Lihat semua clip yang sudah kamu submit")
 @app_commands.describe(
@@ -2708,7 +2723,7 @@ async def reset_gaji_cmd(interaction: discord.Interaction, tipe: str = "semua"):
 
 # ════════════════════════════════════───═══════════════════════���═════════════════
 # FITUR — /init_guides untuk post panduan di setiap channel
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════��═════════════════════════════════════
 
 @bot.tree.command(name="info_channel", description="[ADMIN] Post info guide di channel")
 @app_commands.describe(
@@ -3065,7 +3080,7 @@ async def before_rekap():
 
 # ════════════════���═════════════════════════════════════════════════════════════
 # RUN
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════��════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     if not TOKEN:
