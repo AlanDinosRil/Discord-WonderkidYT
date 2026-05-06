@@ -2360,6 +2360,7 @@ async def tiket_proses_cmd(interaction: discord.Interaction, ticket_id: int, sta
     gaji_channel="Channel notifikasi milestone & gaji",
     rekap_channel="Channel rekap mingguan & periode",
     log_channel="Channel log admin (approval, tiket, pembayaran)",
+    stats_channel="Channel stats mingguan otomatis (update tiap Senin)",
 )
 async def setup(
     interaction: discord.Interaction,
@@ -2367,6 +2368,7 @@ async def setup(
     gaji_channel: discord.TextChannel,
     rekap_channel: discord.TextChannel,
     log_channel: discord.TextChannel,
+    stats_channel: discord.TextChannel = None,
 ):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("Hanya admin.", ephemeral=True)
@@ -2375,14 +2377,20 @@ async def setup(
     db["settings"]["gaji_channel_id"] = gaji_channel.id
     db["settings"]["rekap_channel_id"] = rekap_channel.id
     db["settings"]["log_channel_id"] = log_channel.id
+    if stats_channel:
+        db["settings"]["stats_channel_id"] = stats_channel.id
     save_db(db)
 
-    embed = discord.Embed(title="Setup Berhasil!", color=0x57F287)
-    embed.add_field(name="Clipper", value=f"{clipper_channel.mention}\n(Pengumuman, Welcome)", inline=True)
-    embed.add_field(name="Gaji", value=f"{gaji_channel.mention}\n(Milestone)", inline=True)
-    embed.add_field(name="Rekap", value=f"{rekap_channel.mention}\n(Mingguan, Periode)", inline=True)
-    embed.add_field(name="Log Bot", value=f"{log_channel.mention}\n(Approval, Tiket, Pembayaran)", inline=True)
-    embed.set_footer(text="Semua data sensitif (approval, tiket, rekening) hanya masuk ke Log Bot")
+    embed = discord.Embed(title="⚙️ Setup Berhasil!", color=0x57F287)
+    embed.add_field(name="📢 Clipper", value=f"{clipper_channel.mention}\n(Pengumuman, Welcome)", inline=True)
+    embed.add_field(name="💰 Gaji", value=f"{gaji_channel.mention}\n(Milestone)", inline=True)
+    embed.add_field(name="📊 Rekap", value=f"{rekap_channel.mention}\n(Mingguan, Periode)", inline=True)
+    embed.add_field(name="📋 Log Bot", value=f"{log_channel.mention}\n(Approval, Tiket, Pembayaran)", inline=True)
+    if stats_channel:
+        embed.add_field(name="📈 Stats Otomatis", value=f"{stats_channel.mention}\n(Update tiap Senin otomatis)", inline=True)
+    else:
+        embed.add_field(name="📈 Stats Otomatis", value="Belum diset\n(Opsional, gunakan /setup lagi)", inline=True)
+    embed.set_footer(text="Stats mingguan akan otomatis dikirim setiap Senin ke channel stats")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="riwayat_gaji", description="Lihat riwayat pembayaran gaji")
@@ -3071,6 +3079,10 @@ async def _build_weekly_stats(db: dict, guild, now=None) -> list:
     return [embed1, embed2]
 
 
+# ID message stats terakhir per channel (in-memory, reset saat restart)
+_last_stats_message_id: dict = {}  # channel_id -> message_id
+
+
 @tasks.loop(hours=24)
 async def weekly_recap():
     now = datetime.now(timezone.utc)
@@ -3078,21 +3090,54 @@ async def weekly_recap():
         return
 
     db = load_db()
-    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
-    if not rekap_ch_id:
-        return
-
     guild = next(iter(bot.guilds), None)
-    if not guild:
+    if not guild or not db["clippers"]:
         return
 
-    ch = guild.get_channel(rekap_ch_id)
-    if not ch or not db["clippers"]:
+    # Kirim ke stats_channel (otomatis update) DAN rekap_channel
+    channels_to_send = []
+    stats_ch_id = db["settings"].get("stats_channel_id", 0)
+    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
+
+    if stats_ch_id:
+        ch = guild.get_channel(stats_ch_id)
+        if ch:
+            channels_to_send.append(("stats", ch))
+    if rekap_ch_id and rekap_ch_id != stats_ch_id:
+        ch = guild.get_channel(rekap_ch_id)
+        if ch:
+            channels_to_send.append(("rekap", ch))
+
+    if not channels_to_send:
         return
 
     embeds = await _build_weekly_stats(db, guild, now)
-    await ch.send(embeds=embeds)
-    print(f"[BOT] Stats Mingguan terkirim ke #{ch.name}")
+
+    for ch_type, ch in channels_to_send:
+        try:
+            if ch_type == "stats":
+                # Coba edit message lama kalau ada (supaya tidak spam)
+                prev_id = _last_stats_message_id.get(ch.id)
+                if prev_id:
+                    try:
+                        prev_msg = await ch.fetch_message(prev_id)
+                        await prev_msg.edit(embeds=embeds)
+                        print(f"[BOT] Stats diupdate di #{ch.name}")
+                        continue
+                    except Exception:
+                        pass  # Message lama tidak ada, kirim baru
+                msg = await ch.send(
+                    content="📊 **Stats Mingguan** — diupdate otomatis setiap Senin",
+                    embeds=embeds
+                )
+                _last_stats_message_id[ch.id] = msg.id
+                print(f"[BOT] Stats baru dikirim ke #{ch.name}")
+            else:
+                await ch.send(embeds=embeds)
+                print(f"[BOT] Rekap dikirim ke #{ch.name}")
+        except Exception as e:
+            print(f"[BOT] Error kirim stats ke #{ch.name}: {e}")
+
 
 @weekly_recap.before_loop
 async def before_rekap():
@@ -3103,27 +3148,51 @@ async def before_rekap():
 # UPDATE STATS MANUAL — Admin trigger kapanpun
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="update_stats", description="[ADMIN] Update & kirim stats mingguan sekarang ke channel rekap")
+@bot.tree.command(name="update_stats", description="[ADMIN] Update stats mingguan sekarang (otomatis edit message lama)")
 async def update_stats_cmd(interaction: discord.Interaction):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
 
     db = load_db()
+    stats_ch_id = db["settings"].get("stats_channel_id", 0)
     rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
-    if not rekap_ch_id:
+
+    if not stats_ch_id and not rekap_ch_id:
         return await interaction.response.send_message(
-            "❌ Channel rekap belum diset. Gunakan `/setup` dulu.", ephemeral=True
+            "❌ Channel stats/rekap belum diset. Gunakan `/setup` dulu.", ephemeral=True
         )
 
-    ch = interaction.guild.get_channel(rekap_ch_id)
-    if not ch:
-        return await interaction.response.send_message("❌ Channel rekap tidak ditemukan.", ephemeral=True)
-
     await interaction.response.defer(thinking=True)
-
     embeds = await _build_weekly_stats(db, interaction.guild)
-    await ch.send(content=f"📊 **Stats manual dikirim oleh {interaction.user.mention}**", embeds=embeds)
-    await interaction.followup.send(f"✅ Stats berhasil dikirim ke {ch.mention}!", ephemeral=True)
+    sent_to = []
+
+    # Update stats_channel (edit message lama kalau ada)
+    if stats_ch_id:
+        ch = interaction.guild.get_channel(stats_ch_id)
+        if ch:
+            prev_id = _last_stats_message_id.get(ch.id)
+            if prev_id:
+                try:
+                    prev_msg = await ch.fetch_message(prev_id)
+                    await prev_msg.edit(embeds=embeds)
+                    sent_to.append(f"{ch.mention} (diupdate)")
+                except Exception:
+                    msg = await ch.send(content="📊 **Stats Mingguan** — diupdate otomatis setiap Senin", embeds=embeds)
+                    _last_stats_message_id[ch.id] = msg.id
+                    sent_to.append(f"{ch.mention} (baru)")
+            else:
+                msg = await ch.send(content="📊 **Stats Mingguan** — diupdate otomatis setiap Senin", embeds=embeds)
+                _last_stats_message_id[ch.id] = msg.id
+                sent_to.append(f"{ch.mention} (baru)")
+
+    # Juga kirim ke rekap kalau berbeda
+    if rekap_ch_id and rekap_ch_id != stats_ch_id:
+        ch = interaction.guild.get_channel(rekap_ch_id)
+        if ch:
+            await ch.send(content=f"📊 Stats manual oleh {interaction.user.mention}", embeds=embeds)
+            sent_to.append(ch.mention)
+
+    await interaction.followup.send(f"✅ Stats dikirim ke: {', '.join(sent_to)}", ephemeral=True)
 
 
 @bot.tree.command(name="stats_minggu", description="Lihat stats & ranking mingguan semua clipper")
@@ -3139,6 +3208,225 @@ async def stats_minggu_cmd(interaction: discord.Interaction):
 # ════════════════���═════════════════════════════════════════════════════════════
 # RUN
 # ═════════════════��════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KELUAR / HAPUS CLIPPER
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="keluar", description="Ajukan permohonan keluar dari tim clipper")
+async def keluar_cmd(interaction: discord.Interaction):
+    db = load_db()
+    did = str(interaction.user.id)
+    clipper = get_clipper(db, did)
+
+    if not clipper:
+        return await interaction.response.send_message(
+            "❌ Kamu tidak terdaftar sebagai clipper.", ephemeral=True
+        )
+
+    if db.get("keluar_requests", {}).get(did):
+        return await interaction.response.send_message(
+            "⏳ Permohonan keluarmu sudah diajukan dan sedang menunggu persetujuan admin.",
+            ephemeral=True
+        )
+
+    pending = clipper.get("pending_gaji", 0)
+    log_ch_id = db["settings"].get("log_channel_id", 0)
+
+    if "keluar_requests" not in db:
+        db["keluar_requests"] = {}
+    db["keluar_requests"][did] = {
+        "discord_id": did,
+        "display_name": clipper["display_name"],
+        "requested_at": now_iso(),
+        "pending_gaji": pending,
+    }
+    save_db(db)
+
+    if log_ch_id:
+        log_ch = interaction.guild.get_channel(log_ch_id)
+        if log_ch:
+            class ApproveKeluar(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=None)
+
+                @discord.ui.button(label="✅ Approve Keluar", style=discord.ButtonStyle.danger)
+                async def approve(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                    if not is_admin(btn_interaction.user):
+                        return await btn_interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+                    db2 = load_db()
+                    if not db2.get("keluar_requests", {}).get(did):
+                        return await btn_interaction.response.send_message("⚠️ Request sudah diproses.", ephemeral=True)
+                    clipper2 = get_clipper(db2, did)
+                    if not clipper2:
+                        db2.get("keluar_requests", {}).pop(did, None)
+                        save_db(db2)
+                        return await btn_interaction.response.send_message("⚠️ Clipper tidak ditemukan.", ephemeral=True)
+                    nama = clipper2["display_name"]
+                    sisa_pending = clipper2.get("pending_gaji", 0)
+                    del db2["clippers"][did]
+                    db2["pending_registrations"].pop(did, None)
+                    db2["warnings"].pop(did, None)
+                    db2.get("keluar_requests", {}).pop(did, None)
+                    save_db(db2)
+                    ch_id = db2["settings"].get("clipper_channel_id", 0)
+                    if ch_id:
+                        ch = btn_interaction.guild.get_channel(ch_id)
+                        if ch:
+                            try:
+                                mt = btn_interaction.guild.get_member(int(did))
+                                if mt:
+                                    await ch.set_permissions(mt, overwrite=None)
+                            except Exception:
+                                pass
+                    for child in self.children:
+                        child.disabled = True
+                    result_embed = discord.Embed(
+                        title="✅ Permohonan Keluar Disetujui",
+                        description=f"**{nama}** telah dikeluarkan dari sistem.",
+                        color=0x57F287, timestamp=datetime.now(timezone.utc)
+                    )
+                    result_embed.add_field(name="Disetujui oleh", value=btn_interaction.user.mention, inline=True)
+                    if sisa_pending > 0:
+                        result_embed.add_field(name="⚠️ Pending Gaji", value=fmt_rp(sisa_pending), inline=True)
+                    await btn_interaction.response.edit_message(embed=result_embed, view=self)
+                    try:
+                        mt = btn_interaction.guild.get_member(int(did))
+                        if mt:
+                            dm = discord.Embed(
+                                title="👋 Permohonan Keluar Disetujui",
+                                description="Admin menyetujui permohonan keluarmu.\n\nTerima kasih sudah bergabung! Kamu bisa daftar kembali kapanpun.",
+                                color=0x57F287
+                            )
+                            if sisa_pending > 0:
+                                dm.add_field(name="⚠️ Gaji Pending", value=f"{fmt_rp(sisa_pending)} — hubungi admin untuk klaim", inline=False)
+                            await mt.send(embed=dm)
+                    except Exception:
+                        pass
+
+                @discord.ui.button(label="❌ Tolak", style=discord.ButtonStyle.secondary)
+                async def reject(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                    if not is_admin(btn_interaction.user):
+                        return await btn_interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+                    db2 = load_db()
+                    db2.get("keluar_requests", {}).pop(did, None)
+                    save_db(db2)
+                    for child in self.children:
+                        child.disabled = True
+                    result_embed = discord.Embed(
+                        title="❌ Permohonan Keluar Ditolak",
+                        description=f"Permohonan keluar **{clipper["display_name"]}** ditolak oleh {btn_interaction.user.mention}.",
+                        color=0xED4245, timestamp=datetime.now(timezone.utc)
+                    )
+                    await btn_interaction.response.edit_message(embed=result_embed, view=self)
+                    try:
+                        mt = btn_interaction.guild.get_member(int(did))
+                        if mt:
+                            await mt.send(embed=discord.Embed(
+                                title="❌ Permohonan Keluar Ditolak",
+                                description="Admin menolak permohonan keluarmu. Kamu masih terdaftar sebagai clipper.",
+                                color=0xED4245
+                            ))
+                    except Exception:
+                        pass
+
+            req_embed = discord.Embed(
+                title="🚪 Permohonan Keluar dari Clipper",
+                description=f"{interaction.user.mention} mengajukan permohonan untuk keluar dari tim clipper.",
+                color=0xFEE75C, timestamp=datetime.now(timezone.utc)
+            )
+            req_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            req_embed.add_field(name="👤 Nama", value=clipper["display_name"], inline=True)
+            req_embed.add_field(name="🎬 Total Clip", value=str(clipper.get("total_clips", 0)), inline=True)
+            req_embed.add_field(name="👁️ Total Views", value=fmt_views(clipper.get("total_views", 0)), inline=True)
+            req_embed.add_field(name="💰 Total Gaji", value=fmt_rp(clipper.get("total_gaji", 0)), inline=True)
+            if pending > 0:
+                req_embed.add_field(name="⚠️ Gaji Pending", value=fmt_rp(pending), inline=True)
+            req_embed.set_footer(text="Admin dapat approve atau tolak permohonan ini")
+            await log_ch.send(embed=req_embed, view=ApproveKeluar())
+
+    embed = discord.Embed(
+        title="📨 Permohonan Keluar Diajukan",
+        description="Permohonan keluarmu sudah dikirim ke admin.\n\nKamu akan dapat notifikasi DM setelah admin memproses.",
+        color=0x5865F2, timestamp=datetime.now(timezone.utc)
+    )
+    if pending > 0:
+        embed.add_field(name="⚠️ Perhatian", value=f"Kamu masih punya gaji pending **{fmt_rp(pending)}**!", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="kick_clipper", description="[ADMIN] Keluarkan clipper dari sistem (bukan blacklist)")
+@app_commands.describe(
+    member="Clipper yang dikeluarkan",
+    alasan="Alasan dikeluarkan",
+    bayar_pending="Tandai gaji pending sebagai sudah dibayar?",
+)
+@app_commands.choices(bayar_pending=[
+    app_commands.Choice(name="Ya (tandai lunas)", value="ya"),
+    app_commands.Choice(name="Tidak (pending tetap tercatat)", value="tidak"),
+])
+async def kick_clipper_cmd(interaction: discord.Interaction, member: discord.Member, alasan: str = "Tidak aktif", bayar_pending: str = "tidak"):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    db = load_db()
+    did = str(member.id)
+    clipper = get_clipper(db, did)
+    if not clipper:
+        return await interaction.response.send_message(f"❌ {member.display_name} tidak terdaftar.", ephemeral=True)
+    nama = clipper["display_name"]
+    total_clips = clipper.get("total_clips", 0)
+    total_views = clipper.get("total_views", 0)
+    total_gaji = clipper.get("total_gaji", 0)
+    pending = clipper.get("pending_gaji", 0)
+    if bayar_pending == "ya" and pending > 0:
+        db["clippers"][did]["total_gaji"] += pending
+        db["clippers"][did]["pending_gaji"] = 0
+        db["gaji_history"].append({
+            "discord_id": did, "clipper_name": nama, "amount": pending,
+            "gaji_clips": pending, "bonus_konsisten": 0,
+            "approved_by": str(interaction.user),
+            "catatan": f"Auto-lunas saat kick: {alasan}", "paid_at": now_iso(),
+        })
+        total_gaji += pending
+        pending = 0
+    del db["clippers"][did]
+    db["pending_registrations"].pop(did, None)
+    db["warnings"].pop(did, None)
+    db.get("keluar_requests", {}).pop(did, None)
+    save_db(db)
+    ch_id = db["settings"].get("clipper_channel_id", 0)
+    if ch_id:
+        ch = interaction.guild.get_channel(ch_id)
+        if ch:
+            try:
+                await ch.set_permissions(member, overwrite=None)
+            except Exception:
+                pass
+    embed = discord.Embed(title="🚪 Clipper Dikeluarkan", color=0xEB459E, timestamp=datetime.now(timezone.utc))
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="👤 Clipper", value=member.mention, inline=True)
+    embed.add_field(name="📝 Alasan", value=alasan, inline=True)
+    embed.add_field(name="🎬 Clip", value=str(total_clips), inline=True)
+    embed.add_field(name="👁️ Views", value=fmt_views(total_views), inline=True)
+    embed.add_field(name="💵 Gaji", value=fmt_rp(total_gaji), inline=True)
+    if pending > 0:
+        embed.add_field(name="⚠️ Pending", value=fmt_rp(pending), inline=True)
+    embed.set_footer(text=f"Oleh {interaction.user.display_name} • Bukan blacklist")
+    await interaction.response.send_message(embed=embed)
+    try:
+        await member.send(embed=discord.Embed(
+            title="🚪 Kamu Dikeluarkan dari Tim Clipper",
+            description=f"Admin mengeluarkan kamu.\n**Alasan:** {alasan}\n\nKamu bisa daftar kembali kapanpun.",
+            color=0xEB459E
+        ))
+    except Exception:
+        pass
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="🚪 Admin Kick Clipper",
+        description=f"**Admin:** {interaction.user.mention}\n**Clipper:** {member.mention}\n**Alasan:** {alasan}",
+        color=0xEB459E, timestamp=datetime.now(timezone.utc)
+    ))
+
 
 if __name__ == "__main__":
     if not TOKEN:
