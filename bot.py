@@ -642,45 +642,36 @@ async def submit_clip(interaction: discord.Interaction, url: str):
             verify_result = verify  # Keep first result for error message
     
     if not matched_account:
-        # Jika confidence unknown, jangan beri warning - mungkin masalah teknis
         accounts_list = ", ".join([f"@{acc['username']}" for acc in accounts])
         found_user = verify_result.get('found_username', '') if verify_result else ''
-        
-        if verify_result and verify_result["confidence"] != "unknown" and found_user:
-            # Username terdeteksi tapi tidak cocok - ini curiga
+        confidence = verify_result.get('confidence', 'unknown') if verify_result else 'unknown'
+
+        if confidence != 'unknown' and found_user:
+            # Username TERDETEKSI tapi tidak cocok → ini curiga, kasih warning
             warn_count = add_warning(db, did, f"Submit video bukan miliknya: {url}", "System")
             warn_msg = (
-                f"\n\nWarning **{warn_count}/{MAX_WARNINGS}** diberikan."
-                + ("\n**Auto-blacklist setelah 1 warning lagi!**" if warn_count == MAX_WARNINGS - 1 else "")
-                + ("\n**Kamu telah di-blacklist!**" if warn_count >= MAX_WARNINGS else "")
+                f"\n\n⚠️ Warning **{warn_count}/{MAX_WARNINGS}** diberikan."
+                + ("\n🔴 **Auto-blacklist setelah 1 warning lagi!**" if warn_count == MAX_WARNINGS - 1 else "")
+                + ("\n🔴 **Kamu telah di-blacklist!**" if warn_count >= MAX_WARNINGS else "")
             )
             embed = discord.Embed(
-                title="Verifikasi Gagal - Username Tidak Cocok",
+                title="🚫 Verifikasi Gagal — Username Tidak Cocok",
                 description=(
                     f"Video ini **tidak cocok** dengan akun yang kamu daftarkan.\n\n"
-                    f"**Akun {detected_platform.title()} Terdaftar:** {accounts_list}\n"
-                    f"**Username di Video:** @{found_user}\n"
+                    f"**Akun Terdaftar:** {accounts_list}\n"
+                    f"**Ditemukan di Video:** @{found_user}\n"
                     f"{warn_msg}"
                 ),
                 color=0xED4245
             )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            # Tidak bisa detect username - kemungkinan masalah teknis
-            embed = discord.Embed(
-                title="Verifikasi Gagal - Tidak Bisa Mendeteksi",
-                description=(
-                    f"Bot tidak bisa memverifikasi kepemilikan video ini.\n\n"
-                    f"**Akun {detected_platform.title()} Terdaftar:** {accounts_list}\n"
-                    f"**Kemungkinan penyebab:**\n"
-                    f"- Video private/restricted\n"
-                    f"- TikTok memblokir request\n"
-                    f"- Format URL tidak dikenali\n\n"
-                    f"**Solusi:** Minta admin untuk submit dengan `/admin_submit`\n"
-                    f"atau coba kirim link full (bukan short link)."
-                ),
-                color=0xFEE75C
-            )
-        return await interaction.followup.send(embed=embed, ephemeral=True)
+            # Tidak bisa detect (TikTok block, private, dll) → LANJUT SUBMIT dengan flag unverified
+            # Pakai akun pertama yang platform-nya cocok sebagai fallback
+            matched_account = next((a for a in accounts if a["platform"] == detected_platform), accounts[0] if accounts else None)
+            if not matched_account:
+                return await interaction.followup.send("❌ Tidak ada akun terdaftar untuk platform ini.", ephemeral=True)
+            verification_status = "⚠️ Tidak Terverifikasi (TikTok block)"
 
     # ── Fetch views ──────────────��────────────────────────────────────────────
     result = await fetch_views(url)
@@ -750,6 +741,7 @@ async def submit_clip(interaction: discord.Interaction, url: str):
         sisa = next_tier["min_clips"] - total_clips_now
         embed.add_field(name="🏅 Progress Bonus", value=f"**{sisa} clip lagi** untuk {next_tier['label']} (+{fmt_rp(next_tier['hadiah'])})", inline=True)
     embed.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
+    embed.add_field(name="🔍 Verifikasi", value=verification_status, inline=True)
     embed.set_footer(text=f"Submit oleh {interaction.user.display_name}")
 
     await interaction.followup.send(embed=embed)
@@ -2999,38 +2991,19 @@ async def before_update():
 # REKAP OTOMATIS MINGGUAN — setiap Senin pagi
 # ═════════════���════════════════════════════════════════════════════════════════
 
-@tasks.loop(hours=24)
-async def weekly_recap():
-    now = datetime.now(timezone.utc)
-    if now.weekday() != 0:
-        return
-
-    db = load_db()
-    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
-    if not rekap_ch_id:
-        return
-
-    guild = None
-    for g in bot.guilds:
-        guild = g
-        break
-    if not guild:
-        return
-
-    ch = guild.get_channel(rekap_ch_id)
-    if not ch:
-        return
+async def _build_weekly_stats(db: dict, guild, now=None) -> list:
+    """Build embed list untuk weekly stats — dipanggil otomatis & manual."""
+    if now is None:
+        now = datetime.now(timezone.utc)
 
     clippers = list(db["clippers"].values())
-    if not clippers:
-        return
-
     seminggu_lalu = (now - timedelta(days=7)).isoformat()
     clips_minggu = [c for c in db["clips"] if c.get("submitted_at", "") >= seminggu_lalu]
 
     total_views_minggu = sum(c["views"] for c in clips_minggu)
     total_clips_minggu = len(clips_minggu)
     total_gaji_pending = sum(c.get("pending_gaji", 0) for c in clippers)
+    aktif_count = len([c for c in clippers if c.get("active", True)])
 
     views_per_clipper = {}
     clips_per_clipper = {}
@@ -3039,44 +3012,129 @@ async def weekly_recap():
         views_per_clipper[did] = views_per_clipper.get(did, 0) + c["views"]
         clips_per_clipper[did] = clips_per_clipper.get(did, 0) + 1
 
-    top_minggu = sorted(views_per_clipper.items(), key=lambda x: x[1], reverse=True)[:3]
-
-    embed = discord.Embed(
-        title=f"Rekap Mingguan — {now.strftime('%d %b %Y')}",
-        description=f"Ringkasan aktivitas clipper 7 hari terakhir",
+    # ── Embed 1: Ringkasan ────────────────────────────────────────────────────
+    embed1 = discord.Embed(
+        title=f"📊 Stats Mingguan — {now.strftime('%d %b %Y')}",
+        description="Ringkasan aktivitas seluruh clipper **7 hari terakhir**",
         color=0x5865F2,
         timestamp=now
     )
-    embed.add_field(name="Total Clip Minggu Ini", value=str(total_clips_minggu), inline=True)
-    embed.add_field(name="Total Views Minggu Ini", value=fmt_views(total_views_minggu), inline=True)
-    embed.add_field(name="Total Gaji Pending", value=fmt_rp(total_gaji_pending), inline=True)
-    embed.add_field(name="Total Clipper Aktif", value=str(len([c for c in clippers if c.get("active", True)])), inline=True)
+    embed1.add_field(name="🎬 Total Clip", value=str(total_clips_minggu), inline=True)
+    embed1.add_field(name="👁️ Total Views", value=fmt_views(total_views_minggu), inline=True)
+    embed1.add_field(name="💰 Total Pending", value=fmt_rp(total_gaji_pending), inline=True)
+    embed1.add_field(name="👥 Clipper Aktif", value=str(aktif_count), inline=True)
 
+    # Top 3 minggu ini
+    top_minggu = sorted(views_per_clipper.items(), key=lambda x: x[1], reverse=True)[:3]
+    medals = ["🥇", "🥈", "🥉"]
     if top_minggu:
         top_txt = ""
-        medals = ["1.", "2.", "3."]
         for i, (did, views) in enumerate(top_minggu):
-            clipper = db["clippers"].get(did, {})
-            name = clipper.get("display_name", "Unknown")
-            clips_count = clips_per_clipper.get(did, 0)
-            top_txt += f"{medals[i]} **{name}** — {fmt_views(views)} views ({clips_count} clips)\n"
-        embed.add_field(name="Top Clipper Minggu Ini", value=top_txt, inline=False)
+            c = db["clippers"].get(did, {})
+            top_txt += f"{medals[i]} **{c.get('display_name','?')}** — {fmt_views(views)} ({clips_per_clipper.get(did,0)} clip)\n"
+        embed1.add_field(name="🏆 Top 3 Minggu Ini", value=top_txt, inline=False)
 
-    top_pending = sorted(clippers, key=lambda x: x.get("pending_gaji", 0), reverse=True)[:3]
-    if any(c["pending_gaji"] > 0 for c in top_pending):
-        pending_txt = "\n".join(
-            f"- **{c['display_name']}** — {fmt_rp(c['pending_gaji'])}"
-            for c in top_pending if c["pending_gaji"] > 0
+    # ── Embed 2: Full Ranking semua clipper (views minggu ini) ────────────────
+    all_ranked = []
+    for did, clipper in db["clippers"].items():
+        if not clipper.get("active", True):
+            continue
+        all_ranked.append({
+            "name": clipper.get("display_name", "?"),
+            "views_minggu": views_per_clipper.get(did, 0),
+            "clips_minggu": clips_per_clipper.get(did, 0),
+            "total_views": clipper.get("total_views", 0),
+            "total_clips": clipper.get("total_clips", 0),
+            "pending_gaji": clipper.get("pending_gaji", 0),
+        })
+    all_ranked = sorted(all_ranked, key=lambda x: x["views_minggu"], reverse=True)
+
+    ranking_txt = ""
+    for i, c in enumerate(all_ranked, 1):
+        medal = medals[i-1] if i <= 3 else f"`{i}.`"
+        status = "🟢" if c["views_minggu"] > 0 else "⚫"
+        ranking_txt += (
+            f"{medal} **{c['name']}** {status}\n"
+            f"    👁️ {fmt_views(c['views_minggu'])} views minggu ini • 🎬 {c['clips_minggu']} clip\n"
+            f"    📦 Total: {fmt_views(c['total_views'])} views • 💰 Pending: {fmt_rp(c['pending_gaji'])}\n"
         )
-        embed.add_field(name="Gaji Menunggu Approval", value=pending_txt, inline=False)
 
-    embed.set_footer(text="Rekap otomatis setiap Senin - Campaign Clipper System")
-    await ch.send(embed=embed)
-    print(f"[BOT] Rekap Mingguan terkirim ke #{ch.name}")
+    # Split kalau terlalu panjang (max 4096 chars per embed)
+    embed2 = discord.Embed(
+        title="🏅 Ranking Lengkap Semua Clipper",
+        description=ranking_txt[:4000] if ranking_txt else "Belum ada aktivitas minggu ini.",
+        color=0xEB459E,
+        timestamp=now
+    )
+    embed2.set_footer(text="🟢 = aktif minggu ini • ⚫ = tidak ada clip minggu ini")
+
+    return [embed1, embed2]
+
+
+@tasks.loop(hours=24)
+async def weekly_recap():
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 0:  # Hanya Senin
+        return
+
+    db = load_db()
+    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
+    if not rekap_ch_id:
+        return
+
+    guild = next(iter(bot.guilds), None)
+    if not guild:
+        return
+
+    ch = guild.get_channel(rekap_ch_id)
+    if not ch or not db["clippers"]:
+        return
+
+    embeds = await _build_weekly_stats(db, guild, now)
+    await ch.send(embeds=embeds)
+    print(f"[BOT] Stats Mingguan terkirim ke #{ch.name}")
 
 @weekly_recap.before_loop
 async def before_rekap():
     await bot.wait_until_ready()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UPDATE STATS MANUAL — Admin trigger kapanpun
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="update_stats", description="[ADMIN] Update & kirim stats mingguan sekarang ke channel rekap")
+async def update_stats_cmd(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+
+    db = load_db()
+    rekap_ch_id = db["settings"].get("rekap_channel_id", 0)
+    if not rekap_ch_id:
+        return await interaction.response.send_message(
+            "❌ Channel rekap belum diset. Gunakan `/setup` dulu.", ephemeral=True
+        )
+
+    ch = interaction.guild.get_channel(rekap_ch_id)
+    if not ch:
+        return await interaction.response.send_message("❌ Channel rekap tidak ditemukan.", ephemeral=True)
+
+    await interaction.response.defer(thinking=True)
+
+    embeds = await _build_weekly_stats(db, interaction.guild)
+    await ch.send(content=f"📊 **Stats manual dikirim oleh {interaction.user.mention}**", embeds=embeds)
+    await interaction.followup.send(f"✅ Stats berhasil dikirim ke {ch.mention}!", ephemeral=True)
+
+
+@bot.tree.command(name="stats", description="Lihat stats mingguan semua clipper sekarang")
+async def stats_cmd(interaction: discord.Interaction):
+    db = load_db()
+    if not db["clippers"]:
+        return await interaction.response.send_message("📭 Belum ada clipper terdaftar.", ephemeral=True)
+
+    await interaction.response.defer(thinking=True)
+    embeds = await _build_weekly_stats(db, interaction.guild)
+    await interaction.followup.send(embeds=embeds)
 
 # ════════════════���═════════════════════════════════════════════════════════════
 # RUN
