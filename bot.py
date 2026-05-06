@@ -3315,7 +3315,7 @@ async def keluar_cmd(interaction: discord.Interaction):
                         child.disabled = True
                     result_embed = discord.Embed(
                         title="❌ Permohonan Keluar Ditolak",
-                        description=f"Permohonan keluar **{clipper["display_name"]}** ditolak oleh {btn_interaction.user.mention}.",
+                        description=f"Permohonan keluar **{clipper['display_name']}** ditolak oleh {btn_interaction.user.mention}.",
                         color=0xED4245, timestamp=datetime.now(timezone.utc)
                     )
                     await btn_interaction.response.edit_message(embed=result_embed, view=self)
