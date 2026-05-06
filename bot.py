@@ -3126,8 +3126,8 @@ async def update_stats_cmd(interaction: discord.Interaction):
     await interaction.followup.send(f"✅ Stats berhasil dikirim ke {ch.mention}!", ephemeral=True)
 
 
-@bot.tree.command(name="stats", description="Lihat stats mingguan semua clipper sekarang")
-async def stats_cmd(interaction: discord.Interaction):
+@bot.tree.command(name="stats_minggu", description="Lihat stats & ranking mingguan semua clipper")
+async def stats_minggu_cmd(interaction: discord.Interaction):
     db = load_db()
     if not db["clippers"]:
         return await interaction.response.send_message("📭 Belum ada clipper terdaftar.", ephemeral=True)
