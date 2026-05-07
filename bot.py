@@ -742,6 +742,10 @@ async def submit_clip(interaction: discord.Interaction, url: str):
         embed.add_field(name="🏅 Progress Bonus", value=f"**{sisa} clip lagi** untuk {next_tier['label']} (+{fmt_rp(next_tier['hadiah'])})", inline=True)
     embed.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
     embed.add_field(name="🔍 Verifikasi", value=verification_status, inline=True)
+    # Tampilkan warning kalau views 0 (TikTok block)
+    if views == 0 and result.get("views_note"):
+        embed.add_field(name="⚠️ Catatan Views", value=result["views_note"], inline=False)
+        embed.colour = discord.Colour(0xFEE75C)  # warna kuning kalau views 0
     embed.set_footer(text=f"Submit oleh {interaction.user.display_name}")
 
     await interaction.followup.send(embed=embed)
@@ -3000,18 +3004,30 @@ async def before_update():
 # ═════════════���════════════════════════════════════════════════════════════════
 
 async def _build_weekly_stats(db: dict, guild, now=None) -> list:
-    """Build embed list untuk weekly stats — dipanggil otomatis & manual."""
+    """Build embed list untuk weekly stats — hanya clipper AKTIF yang tampil."""
     if now is None:
         now = datetime.now(timezone.utc)
 
-    clippers = list(db["clippers"].values())
+    # Hanya ambil clipper yang aktif (tidak blacklist, tidak keluar)
+    active_dids = {
+        did for did, c in db["clippers"].items()
+        if c.get("active", True)
+    }
+    active_clippers = [db["clippers"][did] for did in active_dids]
+
     seminggu_lalu = (now - timedelta(days=7)).isoformat()
-    clips_minggu = [c for c in db["clips"] if c.get("submitted_at", "") >= seminggu_lalu]
+
+    # Hanya hitung clips dari clipper AKTIF
+    clips_minggu = [
+        c for c in db["clips"]
+        if c.get("submitted_at", "") >= seminggu_lalu
+        and c["discord_id"] in active_dids
+    ]
 
     total_views_minggu = sum(c["views"] for c in clips_minggu)
     total_clips_minggu = len(clips_minggu)
-    total_gaji_pending = sum(c.get("pending_gaji", 0) for c in clippers)
-    aktif_count = len([c for c in clippers if c.get("active", True)])
+    total_gaji_pending = sum(c.get("pending_gaji", 0) for c in active_clippers)
+    aktif_count = len(active_clippers)
 
     views_per_clipper = {}
     clips_per_clipper = {}
@@ -3023,7 +3039,7 @@ async def _build_weekly_stats(db: dict, guild, now=None) -> list:
     # ── Embed 1: Ringkasan ────────────────────────────────────────────────────
     embed1 = discord.Embed(
         title=f"📊 Stats Mingguan — {now.strftime('%d %b %Y')}",
-        description="Ringkasan aktivitas seluruh clipper **7 hari terakhir**",
+        description="Ringkasan aktivitas **clipper aktif** 7 hari terakhir",
         color=0x5865F2,
         timestamp=now
     )
@@ -3032,8 +3048,11 @@ async def _build_weekly_stats(db: dict, guild, now=None) -> list:
     embed1.add_field(name="💰 Total Pending", value=fmt_rp(total_gaji_pending), inline=True)
     embed1.add_field(name="👥 Clipper Aktif", value=str(aktif_count), inline=True)
 
-    # Top 3 minggu ini
-    top_minggu = sorted(views_per_clipper.items(), key=lambda x: x[1], reverse=True)[:3]
+    # Top 3 minggu ini (hanya clipper aktif)
+    top_minggu = sorted(
+        [(did, v) for did, v in views_per_clipper.items() if did in active_dids],
+        key=lambda x: x[1], reverse=True
+    )[:3]
     medals = ["🥇", "🥈", "🥉"]
     if top_minggu:
         top_txt = ""
@@ -3042,11 +3061,10 @@ async def _build_weekly_stats(db: dict, guild, now=None) -> list:
             top_txt += f"{medals[i]} **{c.get('display_name','?')}** — {fmt_views(views)} ({clips_per_clipper.get(did,0)} clip)\n"
         embed1.add_field(name="🏆 Top 3 Minggu Ini", value=top_txt, inline=False)
 
-    # ── Embed 2: Full Ranking semua clipper (views minggu ini) ────────────────
+    # ── Embed 2: Full Ranking — hanya clipper aktif ───────────────────────────
     all_ranked = []
-    for did, clipper in db["clippers"].items():
-        if not clipper.get("active", True):
-            continue
+    for did in active_dids:
+        clipper = db["clippers"][did]
         all_ranked.append({
             "name": clipper.get("display_name", "?"),
             "views_minggu": views_per_clipper.get(did, 0),
@@ -3067,14 +3085,13 @@ async def _build_weekly_stats(db: dict, guild, now=None) -> list:
             f"    📦 Total: {fmt_views(c['total_views'])} views • 💰 Pending: {fmt_rp(c['pending_gaji'])}\n"
         )
 
-    # Split kalau terlalu panjang (max 4096 chars per embed)
     embed2 = discord.Embed(
-        title="🏅 Ranking Lengkap Semua Clipper",
+        title="🏅 Ranking Clipper Aktif",
         description=ranking_txt[:4000] if ranking_txt else "Belum ada aktivitas minggu ini.",
         color=0xEB459E,
         timestamp=now
     )
-    embed2.set_footer(text="🟢 = aktif minggu ini • ⚫ = tidak ada clip minggu ini")
+    embed2.set_footer(text="🟢 = aktif minggu ini • ⚫ = tidak ada clip • Clipper non-aktif tidak ditampilkan")
 
     return [embed1, embed2]
 
