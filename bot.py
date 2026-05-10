@@ -168,7 +168,7 @@ async def force_sync(ctx):
         print(f"[BOT] Sync error: {e}")
 
 
-# ══════════════════════════════════════════════════════════════════════════���═══
+# ══════════════════════════════════════════════════════════════════════════�����═══
 # FITUR 1 — !daftar dengan sistem approval (butuh persetujuan admin)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -552,7 +552,7 @@ async def pending_cmd(interaction: discord.Interaction):
     for p in pending_list[:10]:  # Max 10
         accounts = p.get("accounts", [])
         acc_text = "\n".join([
-            f"{'🎵' if a['platform'] == 'tiktok' else '▶���'} @{a['username']} ({a['platform'].title()})"
+            f"{'🎵' if a['platform'] == 'tiktok' else '▶�����'} @{a['username']} ({a['platform'].title()})"
             for a in accounts
         ])
         member = interaction.guild.get_member(int(p["discord_id"]))
@@ -798,88 +798,200 @@ async def submit_clip(interaction: discord.Interaction, urls: str):
 # ADMIN SUBMIT — Admin submit clip atas nama clipper (bypass verifikasi)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="admin_submit", description="[ADMIN] Submit clip atas nama clipper (bypass verifikasi)")
+@bot.tree.command(name="admin_submit", description="[ADMIN] Submit clip atas nama clipper (bisa multiple, bypass verifikasi)")
 @app_commands.describe(
     member="Clipper pemilik clip",
-    url="Link video TikTok atau YouTube",
+    urls="Link video TikTok atau YouTube (pisahkan dengan spasi untuk multiple)",
     alasan="Alasan bypass verifikasi",
 )
-async def admin_submit(interaction: discord.Interaction, member: discord.Member, url: str, alasan: str = "Dijamin admin"):
+async def admin_submit(interaction: discord.Interaction, member: discord.Member, urls: str, alasan: str = "Dijamin admin"):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+    
     db = load_db()
     did = str(member.id)
     clipper = get_clipper(db, did)
     if not clipper:
         return await interaction.response.send_message(f"❌ {member.display_name} belum terdaftar.", ephemeral=True)
-    if is_duplicate_url(db, url):
-        existing = next((c for c in db["clips"] if c["url"].strip().rstrip("/").lower() == url.strip().rstrip("/").lower()), None)
-        return await interaction.response.send_message(f"❌ URL sudah ada di database (Clip #{existing['id']}).", ephemeral=True)
+    
     await interaction.response.defer(thinking=True)
-    if "tiktok.com" in url:
-        detected_platform = "tiktok"
-    elif "youtu" in url:
-        detected_platform = "youtube"
-    else:
-        return await interaction.followup.send("❌ Platform tidak dikenali.", ephemeral=True)
-    result = await fetch_views(url)
-    if not result["success"]:
-        return await interaction.followup.send(f"❌ Gagal ambil views: `{result['error']}`", ephemeral=True)
-    views = result["views"]
-    gaji = calc_gaji(views)
-    tier = get_tier(views)
-    accounts = clipper.get("accounts", [])
-    matched_account = next((a for a in accounts if a["platform"] == detected_platform), accounts[0] if accounts else {"id": 0, "username": "unknown"})
-    clip_data = {
-        "id": len(db["clips"]) + 1,
-        "discord_id": did,
-        "clipper_name": clipper["display_name"],
-        "account_id": matched_account.get("id", 0),
-        "account_username": matched_account.get("username", "unknown"),
-        "platform": detected_platform,
-        "url": url,
-        "title": result.get("title", "Unknown"),
-        "thumbnail": result.get("thumbnail", ""),
-        "views": views,
-        "views_milestones": [],
-        "gaji": gaji,
-        "gaji_paid": False,
-        "submitted_at": now_iso(),
-        "last_updated": now_iso(),
-        "submitted_by_admin": str(interaction.user),
-        "admin_alasan": alasan,
-    }
-    db["clips"].append(clip_data)
-    db["clippers"][did]["total_clips"] += 1
-    db["clippers"][did]["total_views"] += views
-    db["clippers"][did]["pending_gaji"] += gaji
-    if periode_aktif(db):
-        tambah_periode_stats(db, did, views)
+
+    # Parse URLs - support space-separated or comma-separated
+    url_list = [u.strip() for u in urls.replace(",", " ").split() if u.strip()]
+    
+    if not url_list:
+        return await interaction.followup.send("❌ Mohon berikan minimal 1 link.", ephemeral=True)
+    
+    if len(url_list) > 10:
+        return await interaction.followup.send("❌ Maksimal 10 link per admin_submit.", ephemeral=True)
+
+    # Helper function untuk submit satu clip
+    async def process_single_url(url: str) -> dict:
+        url = url.strip()
+        
+        # ── Anti-duplikat ─────────────────────────────────────────────────────────
+        if is_duplicate_url(db, url):
+            existing = next((c for c in db["clips"] if c["url"].strip().rstrip("/").lower() == url.strip().rstrip("/").lower()), None)
+            return {
+                "success": False,
+                "error": f"URL sudah ada di database (Clip #{existing['id']})"
+            }
+
+        # ── Detect platform ──────────────────────────────────────────────────────
+        if "tiktok.com" in url:
+            detected_platform = "tiktok"
+        elif "youtu" in url:
+            detected_platform = "youtube"
+        else:
+            return {
+                "success": False,
+                "error": "Platform tidak dikenali"
+            }
+
+        # ── Fetch views ──────────────────────────────────────────────────────────
+        result = await fetch_views(url)
+        if not result["success"]:
+            return {
+                "success": False,
+                "error": f"Gagal ambil views: `{result['error']}`"
+            }
+
+        views = result["views"]
+        gaji = calc_gaji(views)
+        tier = get_tier(views)
+        accounts = clipper.get("accounts", [])
+        matched_account = next((a for a in accounts if a["platform"] == detected_platform), accounts[0] if accounts else {"id": 0, "username": "unknown"})
+        
+        clip_data = {
+            "id": len(db["clips"]) + 1,
+            "discord_id": did,
+            "clipper_name": clipper["display_name"],
+            "account_id": matched_account.get("id", 0),
+            "account_username": matched_account.get("username", "unknown"),
+            "platform": detected_platform,
+            "url": url,
+            "title": result.get("title", "Unknown"),
+            "thumbnail": result.get("thumbnail", ""),
+            "views": views,
+            "views_milestones": [],
+            "gaji": gaji,
+            "gaji_paid": False,
+            "submitted_at": now_iso(),
+            "last_updated": now_iso(),
+            "submitted_by_admin": str(interaction.user),
+            "admin_alasan": alasan,
+        }
+        db["clips"].append(clip_data)
+        db["clippers"][did]["total_clips"] += 1
+        db["clippers"][did]["total_views"] += views
+        db["clippers"][did]["pending_gaji"] += gaji
+
+        if periode_aktif(db):
+            tambah_periode_stats(db, did, views)
+
+        return {
+            "success": True,
+            "clip_data": clip_data,
+            "result": result,
+            "views": views,
+            "gaji": gaji,
+            "tier": tier
+        }
+
+    # Process all URLs
+    results = []
+    for url in url_list:
+        result = await process_single_url(url)
+        results.append(result)
+
+    # Save DB once after all URLs processed
     save_db(db)
-    embed = discord.Embed(title="✅ Clip Disubmit oleh Admin!", color=0x5865F2, timestamp=datetime.now(timezone.utc))
-    embed.set_thumbnail(url=result.get("thumbnail", ""))
-    embed.add_field(name="👤 Clipper", value=member.mention, inline=True)
-    embed.add_field(name="🎬 Judul", value=result.get("title", "Unknown")[:80], inline=False)
-    embed.add_field(name="👁️ Views", value=fmt_views(views), inline=True)
-    embed.add_field(name=f"{tier['emoji']} Tier", value=tier["label"], inline=True)
-    embed.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji) if gaji > 0 else "Belum 100K", inline=True)
-    embed.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
-    embed.add_field(name="📝 Alasan Bypass", value=alasan, inline=False)
-    embed.set_footer(text=f"Disubmit oleh Admin {interaction.user.display_name}")
-    await interaction.followup.send(embed=embed)
-    await send_log(interaction.guild, db, embed=discord.Embed(
+
+    # Build response embed
+    successful_clips = [r for r in results if r["success"]]
+    failed_clips = [r for r in results if not r["success"]]
+
+    main_embed = discord.Embed(
+        title="✅ Admin Submit",
+        color=0x5865F2 if not failed_clips else (0xFEE75C if successful_clips else 0xED4245),
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    # Summary
+    main_embed.add_field(
+        name="📊 Summary",
+        value=f"✅ Berhasil: {len(successful_clips)}\n❌ Gagal: {len(failed_clips)}\n📝 Total: {len(results)}",
+        inline=False
+    )
+    
+    main_embed.add_field(name="👤 Clipper", value=member.mention, inline=False)
+
+    # Successful clips
+    if successful_clips:
+        success_text = ""
+        total_views = 0
+        total_gaji = 0
+        
+        for r in successful_clips:
+            clip = r["clip_data"]
+            tier = r["tier"]
+            success_text += f"**#{clip['id']}** | {clip['title'][:40]} | {fmt_views(r['views'])} | {fmt_rp(r['gaji'])}\n"
+            total_views += r['views']
+            total_gaji += r['gaji']
+        
+        main_embed.add_field(name="✅ Clip Berhasil", value=success_text, inline=False)
+        main_embed.add_field(
+            name="💯 Total Stats",
+            value=f"📺 Views: {fmt_views(total_views)}\n💰 Gaji: {fmt_rp(total_gaji)}",
+            inline=False
+        )
+
+    # Failed clips
+    if failed_clips:
+        fail_text = ""
+        for i, r in enumerate(failed_clips):
+            url = url_list[results.index(r)]
+            fail_text += f"🔗 `{url[:50]}...`\n❌ {r['error']}\n"
+        main_embed.add_field(name="❌ Clip Gagal", value=fail_text, inline=False)
+
+    main_embed.add_field(name="📝 Alasan", value=alasan, inline=False)
+    main_embed.set_footer(text=f"Admin: {interaction.user.display_name}")
+    await interaction.followup.send(embed=main_embed)
+
+    # ── Log ke admin channel ──────────────────────────────────────────────────────
+    log_embed = discord.Embed(
         title="⚠️ Admin Submit (Bypass Verifikasi)",
-        description=f"**Admin:** {interaction.user.mention}\n**Clipper:** {member.mention}\n**URL:** {url}\n**Views:** {fmt_views(views)}\n**Alasan:** {alasan}",
-        color=0xFEE75C, timestamp=datetime.now(timezone.utc)
-    ))
-    try:
-        dm = discord.Embed(title="✅ Clip Kamu Disubmit oleh Admin", description=f"Admin **{interaction.user.display_name}** submit clip atas namamu.", color=0x57F287)
-        dm.add_field(name="👁️ Views", value=fmt_views(views), inline=True)
-        dm.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji), inline=True)
-        dm.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
-        await member.send(embed=dm)
-    except Exception:
-        pass
+        description=f"**Admin:** {interaction.user.mention}\n**Clipper:** {member.mention}\n**Alasan:** {alasan}",
+        color=0xFEE75C,
+        timestamp=datetime.now(timezone.utc)
+    )
+    log_embed.add_field(
+        name="📊 Hasil",
+        value=f"✅ Berhasil: {len(successful_clips)}\n❌ Gagal: {len(failed_clips)}",
+        inline=False
+    )
+    await send_log(interaction.guild, db, embed=log_embed)
+
+    # ── Kirim DM ke clipper untuk setiap clip yang berhasil ──────────────────────────
+    if successful_clips:
+        total_views = sum(r['views'] for r in successful_clips)
+        total_gaji = sum(r['gaji'] for r in successful_clips)
+        
+        try:
+            dm = discord.Embed(
+                title="✅ Clip Kamu Disubmit oleh Admin",
+                description=f"Admin **{interaction.user.display_name}** submit **{len(successful_clips)} clip** atas namamu.",
+                color=0x57F287
+            )
+            dm.add_field(name="👁️ Total Views", value=fmt_views(total_views), inline=True)
+            dm.add_field(name="💰 Total Gaji", value=fmt_rp(total_gaji), inline=True)
+            
+            clip_list = "\n".join(f"#{r['clip_data']['id']} - {fmt_views(r['views'])} views" for r in successful_clips)
+            dm.add_field(name="🎬 Clip List", value=clip_list, inline=False)
+            
+            await member.send(embed=dm)
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1005,7 +1117,7 @@ async def help_cmd(interaction: discord.Interaction):
             "**`!daftar <platform> <@username>`** - Daftar sebagai clipper\n"
             "**`/add <platform> <@username>`** - Tambah akun baru\n"
             "**`/akun`** - Lihat semua akun kamu & akun pending\n"
-            "**`/submit <clip_link>`** - Submit clip untuk review\n"
+                "**`/submit <clip_link> [...]`** - Submit 1-10 clip (space-separated)\n"
             "**`/clip_saya`** - Lihat semua clip yang sudah disubmit\n"
             "**`/hapus_clip <id>`** - Hapus clip kamu (pending only)\n"
             "**`/tiket`** - Buat tiket klaim reward\n"
@@ -1025,7 +1137,7 @@ async def help_cmd(interaction: discord.Interaction):
                 "**`/pending`** - Lihat pendaftaran menunggu\n"
                 "**`/approve @user`** - Setujui pendaftaran\n"
                 "**`/reject @user`** - Tolak pendaftaran\n"
-                "**`/admin_submit @user <url>`** - Submit atas nama clipper\n"
+                "**`/admin_submit @user <url> [...]`** - Submit 1-10 clip atas nama clipper\n"
                 "**`/edit_clip <id>`** - Edit data clip\n"
                 "**`/hapus_clip <id>`** - Hapus clip (termasuk paid)\n"
                 "**`/bayar @user`** - Bayar gaji clipper\n"
@@ -1415,7 +1527,7 @@ async def daftar_clipper(interaction: discord.Interaction):
     embed.set_footer(text="Gunakan /profil @member untuk detail")
     await interaction.response.send_message(embed=embed)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════���═════════════════════════
 # FITUR 5 — /leaderboard
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1769,7 +1881,7 @@ async def tutup_periode_cmd(interaction: discord.Interaction):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN — Warning & Blacklist
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════���═
 
 @bot.tree.command(name="warning", description="[ADMIN] Beri warning ke clipper")
 @app_commands.describe(member="Clipper yang diberi warning", alasan="Alasan warning")
