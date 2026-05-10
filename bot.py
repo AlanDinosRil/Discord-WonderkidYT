@@ -552,7 +552,7 @@ async def pending_cmd(interaction: discord.Interaction):
     for p in pending_list[:10]:  # Max 10
         accounts = p.get("accounts", [])
         acc_text = "\n".join([
-            f"{'🎵' if a['platform'] == 'tiktok' else '▶️'} @{a['username']} ({a['platform'].title()})"
+            f"{'🎵' if a['platform'] == 'tiktok' else '▶���'} @{a['username']} ({a['platform'].title()})"
             for a in accounts
         ])
         member = interaction.guild.get_member(int(p["discord_id"]))
@@ -570,9 +570,9 @@ async def pending_cmd(interaction: discord.Interaction):
 # FITUR 2 — /submit dengan verifikasi multi-akun
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="submit", description="Submit clip campaign TikTok/YouTube kamu")
-@app_commands.describe(url="Link video TikTok atau YouTube")
-async def submit_clip(interaction: discord.Interaction, url: str):
+@bot.tree.command(name="submit", description="Submit clip campaign TikTok/YouTube kamu (bisa multiple link)")
+@app_commands.describe(urls="Link video TikTok atau YouTube (pisahkan dengan spasi untuk multiple)")
+async def submit_clip(interaction: discord.Interaction, urls: str):
     db = load_db()
     did = str(interaction.user.id)
     clipper = get_clipper(db, did)
@@ -592,163 +592,207 @@ async def submit_clip(interaction: discord.Interaction, url: str):
     if is_blacklisted(db, did):
         return await interaction.response.send_message("Kamu di-blacklist. Hubungi admin.", ephemeral=True)
 
-    # ── Anti-duplikat ─────────────────────────────────────────────────────────
-    if is_duplicate_url(db, url):
-        existing = next((c for c in db["clips"] if c["url"].strip().rstrip("/").lower() == url.strip().rstrip("/").lower()), None)
-        warn_count = add_warning(db, did, f"Submit URL duplikat: {url}", "System")
-        embed = discord.Embed(
-            title="URL Sudah Pernah Disubmit!",
-            description=(
-                f"Link ini sudah ada di database (Clip #{existing['id']} oleh **{existing['clipper_name']}**).\n\n"
-                f"Warning kamu: **{warn_count}/{MAX_WARNINGS}**"
-                + ("\n**Satu warning lagi = auto blacklist!**" if warn_count == MAX_WARNINGS - 1 else "")
-                + ("\n**Kamu telah di-blacklist otomatis!**" if warn_count >= MAX_WARNINGS else "")
-            ),
-            color=0xED4245
-        )
-        return await interaction.response.send_message(embed=embed, ephemeral=True)
-
     await interaction.response.defer(thinking=True)
 
-    # ── Verifikasi kepemilikan video (cek semua akun) ─────────────────────────
-    # Detect platform from URL
-    if "tiktok.com" in url:
-        detected_platform = "tiktok"
-    elif "youtu" in url:
-        detected_platform = "youtube"
-    else:
-        return await interaction.followup.send("Platform tidak dikenali. Gunakan link TikTok atau YouTube.", ephemeral=True)
+    # Parse URLs - support space-separated or comma-separated
+    url_list = [u.strip() for u in urls.replace(",", " ").split() if u.strip()]
     
-    # Get all accounts for this platform
-    accounts = [acc for acc in clipper.get("accounts", []) if acc["platform"] == detected_platform]
+    if not url_list:
+        return await interaction.followup.send("❌ Mohon berikan minimal 1 link.", ephemeral=True)
     
-    if not accounts:
-        return await interaction.followup.send(
-            f"Kamu tidak punya akun {detected_platform.title()} terdaftar. Tambah dulu dengan `/add`.", 
-            ephemeral=True
-        )
-    
-    # Try to verify against all accounts
-    verify_result = None
-    matched_account = None
-    
-    for acc in accounts:
-        verify = await verify_clip(url, acc["username"], acc["platform"])
-        if verify["match"]:
-            verify_result = verify
-            matched_account = acc
-            break
-        elif verify_result is None:
-            verify_result = verify  # Keep first result for error message
-    
-    if not matched_account:
-        accounts_list = ", ".join([f"@{acc['username']}" for acc in accounts])
-        found_user = verify_result.get('found_username', '') if verify_result else ''
-        confidence = verify_result.get('confidence', 'unknown') if verify_result else 'unknown'
+    if len(url_list) > 10:
+        return await interaction.followup.send("❌ Maksimal 10 link per submit. Coba lagi dengan link yang lebih sedikit.", ephemeral=True)
 
-        if confidence != 'unknown' and found_user:
-            # Username TERDETEKSI tapi tidak cocok → ini curiga, kasih warning
-            warn_count = add_warning(db, did, f"Submit video bukan miliknya: {url}", "System")
-            warn_msg = (
-                f"\n\n⚠️ Warning **{warn_count}/{MAX_WARNINGS}** diberikan."
-                + ("\n🔴 **Auto-blacklist setelah 1 warning lagi!**" if warn_count == MAX_WARNINGS - 1 else "")
-                + ("\n🔴 **Kamu telah di-blacklist!**" if warn_count >= MAX_WARNINGS else "")
-            )
-            embed = discord.Embed(
-                title="🚫 Verifikasi Gagal — Username Tidak Cocok",
-                description=(
-                    f"Video ini **tidak cocok** dengan akun yang kamu daftarkan.\n\n"
-                    f"**Akun Terdaftar:** {accounts_list}\n"
-                    f"**Ditemukan di Video:** @{found_user}\n"
-                    f"{warn_msg}"
-                ),
-                color=0xED4245
-            )
-            return await interaction.followup.send(embed=embed, ephemeral=True)
+    # Helper function untuk submit satu clip
+    async def process_single_url(url: str) -> dict:
+        url = url.strip()
+        verification_status = "✅ Terverifikasi"
+        
+        # ── Anti-duplikat ─────────────────────────────────────────────────────────
+        if is_duplicate_url(db, url):
+            existing = next((c for c in db["clips"] if c["url"].strip().rstrip("/").lower() == url.strip().rstrip("/").lower()), None)
+            warn_count = add_warning(db, did, f"Submit URL duplikat: {url}", "System")
+            return {
+                "success": False,
+                "error": f"Link sudah ada di database (Clip #{existing['id']} oleh **{existing['clipper_name']}**)",
+                "warning": warn_count
+            }
+
+        # ── Verifikasi kepemilikan video (cek semua akun) ─────────────────────────
+        # Detect platform from URL
+        if "tiktok.com" in url:
+            detected_platform = "tiktok"
+        elif "youtu" in url:
+            detected_platform = "youtube"
         else:
-            # Tidak bisa detect (TikTok block, private, dll) → LANJUT SUBMIT dengan flag unverified
-            # Pakai akun pertama yang platform-nya cocok sebagai fallback
-            matched_account = next((a for a in accounts if a["platform"] == detected_platform), accounts[0] if accounts else None)
-            if not matched_account:
-                return await interaction.followup.send("❌ Tidak ada akun terdaftar untuk platform ini.", ephemeral=True)
-            verification_status = "⚠️ Tidak Terverifikasi (TikTok block)"
+            return {
+                "success": False,
+                "error": "Platform tidak dikenali. Gunakan link TikTok atau YouTube."
+            }
+        
+        # Get all accounts for this platform
+        accounts = [acc for acc in clipper.get("accounts", []) if acc["platform"] == detected_platform]
+        
+        if not accounts:
+            return {
+                "success": False,
+                "error": f"Kamu tidak punya akun {detected_platform.title()} terdaftar. Tambah dulu dengan `/add`."
+            }
+        
+        # Try to verify against all accounts
+        verify_result = None
+        matched_account = None
+        
+        for acc in accounts:
+            verify = await verify_clip(url, acc["username"], acc["platform"])
+            if verify["match"]:
+                verify_result = verify
+                matched_account = acc
+                break
+            elif verify_result is None:
+                verify_result = verify  # Keep first result for error message
+        
+        if not matched_account:
+            accounts_list = ", ".join([f"@{acc['username']}" for acc in accounts])
+            found_user = verify_result.get('found_username', '') if verify_result else ''
+            confidence = verify_result.get('confidence', 'unknown') if verify_result else 'unknown'
 
-    # ── Fetch views ──────────────��────────────────────────────────────────────
-    result = await fetch_views(url)
-    if not result["success"]:
-        return await interaction.followup.send(
-            f"Gagal ambil views: `{result['error']}`\nPastikan video tidak private.", ephemeral=True
-        )
+            if confidence != 'unknown' and found_user:
+                # Username TERDETEKSI tapi tidak cocok → ini curiga, kasih warning
+                warn_count = add_warning(db, did, f"Submit video bukan miliknya: {url}", "System")
+                return {
+                    "success": False,
+                    "error": f"Video tidak cocok dengan akun terdaftar.\n**Akun:** {accounts_list}\n**Ditemukan:** @{found_user}",
+                    "warning": warn_count
+                }
+            else:
+                # Tidak bisa detect (TikTok block, private, dll) → LANJUT SUBMIT dengan flag unverified
+                # Pakai akun pertama yang platform-nya cocok sebagai fallback
+                matched_account = next((a for a in accounts if a["platform"] == detected_platform), accounts[0] if accounts else None)
+                if not matched_account:
+                    return {
+                        "success": False,
+                        "error": "Tidak ada akun terdaftar untuk platform ini."
+                    }
+                verification_status = "⚠️ Tidak Terverifikasi (TikTok block)"
 
-    views = result["views"]
-    gaji = calc_gaji(views)
-    tier = get_tier(views)
+        # ── Fetch views ──────────────────────────────────────────────────────────
+        result = await fetch_views(url)
+        if not result["success"]:
+            return {
+                "success": False,
+                "error": f"Gagal ambil views: `{result['error']}`"
+            }
 
-    clip_data = {
-        "id": len(db["clips"]) + 1,
-        "discord_id": did,
-        "clipper_name": clipper["display_name"],
-        "account_id": matched_account["id"],
-        "account_username": matched_account["username"],
-        "platform": result["platform"],
-        "url": url,
-        "title": result.get("title", "Unknown"),
-        "thumbnail": result.get("thumbnail", ""),
-        "views": views,
-        "views_milestones": [],
-        "gaji": gaji,
-        "gaji_paid": False,
-        "submitted_at": now_iso(),
-        "last_updated": now_iso(),
-    }
-    db["clips"].append(clip_data)
-    db["clippers"][did]["total_clips"] += 1
-    db["clippers"][did]["total_views"] += views
-    db["clippers"][did]["pending_gaji"] += gaji
+        views = result["views"]
+        gaji = calc_gaji(views)
+        tier = get_tier(views)
 
-    # Update stats periode jika aktif
-    if periode_aktif(db):
-        tambah_periode_stats(db, did, views)
+        clip_data = {
+            "id": len(db["clips"]) + 1,
+            "discord_id": did,
+            "clipper_name": clipper["display_name"],
+            "account_id": matched_account["id"],
+            "account_username": matched_account["username"],
+            "platform": result["platform"],
+            "url": url,
+            "title": result.get("title", "Unknown"),
+            "thumbnail": result.get("thumbnail", ""),
+            "views": views,
+            "views_milestones": [],
+            "gaji": gaji,
+            "gaji_paid": False,
+            "submitted_at": now_iso(),
+            "last_updated": now_iso(),
+        }
+        db["clips"].append(clip_data)
+        db["clippers"][did]["total_clips"] += 1
+        db["clippers"][did]["total_views"] += views
+        db["clippers"][did]["pending_gaji"] += gaji
 
+        # Update stats periode jika aktif
+        if periode_aktif(db):
+            tambah_periode_stats(db, did, views)
+
+        return {
+            "success": True,
+            "clip_data": clip_data,
+            "result": result,
+            "views": views,
+            "gaji": gaji,
+            "tier": tier,
+            "verification_status": verification_status
+        }
+
+    # Process all URLs
+    results = []
+    for url in url_list:
+        result = await process_single_url(url)
+        results.append(result)
+
+    # Save DB once after all URLs processed
     save_db(db)
 
-    # Hitung progress bonus konsisten
-    total_clips_now = db["clippers"][did]["total_clips"]
-    active_konsisten = get_active_konsisten_tiers(db)
-    konsisten_now = calc_konsisten_hadiah(total_clips_now, db)
-    # Cari tier berikutnya
-    next_tier = None
-    for kt in sorted(active_konsisten, key=lambda x: x["min_clips"]):
-        if kt["min_clips"] > total_clips_now:
-            next_tier = kt
-            break
+    # Build response embed
+    successful_clips = [r for r in results if r["success"]]
+    failed_clips = [r for r in results if not r["success"]]
 
-    embed = discord.Embed(
-        title="✅ Clip Berhasil Disubmit!",
-        color=0x57F287,
+    main_embed = discord.Embed(
+        title="📤 Hasil Submission",
+        color=0x57F287 if not failed_clips else (0xFEE75C if successful_clips else 0xED4245),
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_thumbnail(url=result.get("thumbnail", ""))
-    embed.add_field(name="🎬 Judul", value=result.get("title", "Unknown")[:80], inline=False)
-    embed.add_field(name="��️ Views", value=fmt_views(views), inline=True)
-    embed.add_field(name=f"{tier['emoji']} Tier Gaji", value=tier["label"], inline=True)
-    embed.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji) if gaji > 0 else "Belum 100K", inline=True)
-    embed.add_field(name="🎬 Total Clip Kamu", value=f"{total_clips_now} clip", inline=True)
-    # Status bonus konsisten
-    if konsisten_now:
-        embed.add_field(name="🏅 Bonus Konsisten", value=f"{konsisten_now['label']} (+{fmt_rp(konsisten_now['hadiah'])})", inline=True)
-    elif next_tier:
-        sisa = next_tier["min_clips"] - total_clips_now
-        embed.add_field(name="🏅 Progress Bonus", value=f"**{sisa} clip lagi** untuk {next_tier['label']} (+{fmt_rp(next_tier['hadiah'])})", inline=True)
-    embed.add_field(name="📌 Clip ID", value=f"#{clip_data['id']}", inline=True)
-    embed.add_field(name="🔍 Verifikasi", value=verification_status, inline=True)
-    # Tampilkan warning kalau views 0 (TikTok block)
-    if views == 0 and result.get("views_note"):
-        embed.add_field(name="⚠️ Catatan Views", value=result["views_note"], inline=False)
-        embed.colour = discord.Colour(0xFEE75C)  # warna kuning kalau views 0
-    embed.set_footer(text=f"Submit oleh {interaction.user.display_name}")
+    
+    # Summary
+    main_embed.add_field(
+        name="📊 Summary",
+        value=f"✅ Berhasil: {len(successful_clips)}\n❌ Gagal: {len(failed_clips)}\n📝 Total: {len(results)}",
+        inline=False
+    )
 
-    await interaction.followup.send(embed=embed)
+    # Successful clips
+    if successful_clips:
+        total_clips_now = db["clippers"][did]["total_clips"]
+        active_konsisten = get_active_konsisten_tiers(db)
+        konsisten_now = calc_konsisten_hadiah(total_clips_now, db)
+        
+        success_text = ""
+        for r in successful_clips:
+            clip = r["clip_data"]
+            tier = r["tier"]
+            success_text += f"**#{clip['id']}** | {clip['title'][:40]} | {fmt_views(r['views'])} views | {fmt_rp(r['gaji'])}\n"
+        
+        main_embed.add_field(name="✅ Clip Berhasil", value=success_text, inline=False)
+        
+        # Summary stats
+        total_views_added = sum(r["views"] for r in successful_clips)
+        total_gaji_added = sum(r["gaji"] for r in successful_clips)
+        
+        stats_text = (
+            f"📺 **Total Views:** {fmt_views(total_views_added)}\n"
+            f"💰 **Total Gaji:** {fmt_rp(total_gaji_added)}\n"
+            f"🎬 **Total Clip:** {total_clips_now} clips"
+        )
+        
+        if konsisten_now:
+            stats_text += f"\n🏅 **Bonus:** {konsisten_now['label']} (+{fmt_rp(konsisten_now['hadiah'])})"
+        
+        main_embed.add_field(name="💯 Stats", value=stats_text, inline=False)
+
+    # Failed clips
+    if failed_clips:
+        fail_text = ""
+        for r in failed_clips:
+            url = url_list[results.index(r)]
+            fail_text += f"🔗 `{url[:50]}...`\n❌ {r['error']}\n"
+        main_embed.add_field(name="❌ Clip Gagal", value=fail_text, inline=False)
+
+    main_embed.set_footer(text=f"Submit oleh {interaction.user.display_name}")
+    await interaction.followup.send(embed=main_embed)
+
+    # ── Kirim ke share channel untuk setiap clip yang berhasil ──────────────────────────
+    for r in successful_clips:
+        await _share_clip_to_channel(interaction.guild, db, r["clip_data"], interaction.user, r["result"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN SUBMIT — Admin submit clip atas nama clipper (bypass verifikasi)
@@ -1331,7 +1375,7 @@ async def akun_cmd(interaction: discord.Interaction):
     embed.set_footer(text="Gunakan /add untuk menambah akun baru")
     await interaction.response.send_message(embed=embed)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════���════════════════════════════════════════════
 # FITUR 4 — /daftar_clipper
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2365,6 +2409,7 @@ async def tiket_proses_cmd(interaction: discord.Interaction, ticket_id: int, sta
     rekap_channel="Channel rekap mingguan & periode",
     log_channel="Channel log admin (approval, tiket, pembayaran)",
     stats_channel="Channel stats mingguan otomatis (update tiap Senin)",
+    share_channel="Channel pengumuman clip baru dari clipper (otomatis)",
 )
 async def setup(
     interaction: discord.Interaction,
@@ -2373,6 +2418,7 @@ async def setup(
     rekap_channel: discord.TextChannel,
     log_channel: discord.TextChannel,
     stats_channel: discord.TextChannel = None,
+    share_channel: discord.TextChannel = None,
 ):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("Hanya admin.", ephemeral=True)
@@ -2383,6 +2429,8 @@ async def setup(
     db["settings"]["log_channel_id"] = log_channel.id
     if stats_channel:
         db["settings"]["stats_channel_id"] = stats_channel.id
+    if share_channel:
+        db["settings"]["share_channel_id"] = share_channel.id
     save_db(db)
 
     embed = discord.Embed(title="⚙️ Setup Berhasil!", color=0x57F287)
@@ -2390,11 +2438,13 @@ async def setup(
     embed.add_field(name="💰 Gaji", value=f"{gaji_channel.mention}\n(Milestone)", inline=True)
     embed.add_field(name="📊 Rekap", value=f"{rekap_channel.mention}\n(Mingguan, Periode)", inline=True)
     embed.add_field(name="📋 Log Bot", value=f"{log_channel.mention}\n(Approval, Tiket, Pembayaran)", inline=True)
-    if stats_channel:
-        embed.add_field(name="📈 Stats Otomatis", value=f"{stats_channel.mention}\n(Update tiap Senin otomatis)", inline=True)
-    else:
-        embed.add_field(name="📈 Stats Otomatis", value="Belum diset\n(Opsional, gunakan /setup lagi)", inline=True)
-    embed.set_footer(text="Stats mingguan akan otomatis dikirim setiap Senin ke channel stats")
+    embed.add_field(name="📈 Stats Otomatis",
+        value=f"{stats_channel.mention}\n(Update tiap Senin)" if stats_channel else "Belum diset",
+        inline=True)
+    embed.add_field(name="📣 Share Clip",
+        value=f"{share_channel.mention}\n(Otomatis saat clipper submit)" if share_channel else "Belum diset",
+        inline=True)
+    embed.set_footer(text="Gunakan /info_channel untuk cek semua channel yang aktif")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="riwayat_gaji", description="Lihat riwayat pembayaran gaji")
@@ -2945,6 +2995,46 @@ async def check_milestone(clip: dict, old_views: int, new_views: int, guild: dis
 # AUTO UPDATE VIEWS — setiap 6 jam + cek milestone
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _share_clip_to_channel(guild, db: dict, clip_data: dict, submitter, result: dict):
+    """Kirim pengumuman clip baru ke share_channel."""
+    share_ch_id = db["settings"].get("share_channel_id", 0)
+    if not share_ch_id:
+        return
+    ch = guild.get_channel(share_ch_id)
+    if not ch:
+        return
+    try:
+        platform = clip_data.get("platform", "tiktok")
+        p_icon = "🎵" if platform == "tiktok" else "▶️"
+        views = clip_data.get("views", 0)
+        gaji = clip_data.get("gaji", 0)
+        tier = get_tier(views, db)
+
+        embed = discord.Embed(
+            title=f"{p_icon} Clip Baru dari {clip_data['clipper_name']}!",
+            color=0x00C9A7,
+            timestamp=datetime.now(timezone.utc)
+        )
+        if result.get("thumbnail"):
+            embed.set_thumbnail(url=result["thumbnail"])
+        embed.add_field(
+            name="🎬 Judul",
+            value=result.get("title", clip_data.get("title", "Unknown"))[:80],
+            inline=False
+        )
+        embed.add_field(name="👤 Clipper", value=f"@{clip_data.get('account_username', clip_data['clipper_name'])}", inline=True)
+        embed.add_field(name="👁️ Views", value=fmt_views(views) if views > 0 else "Sedang dihitung...", inline=True)
+        embed.add_field(name=f"{tier['emoji']} Tier", value=tier["label"], inline=True)
+        embed.add_field(name="🔗 Link", value=clip_data["url"], inline=False)
+        if gaji > 0:
+            embed.add_field(name="💰 Estimasi Gaji", value=fmt_rp(gaji), inline=True)
+        embed.set_footer(text=f"Clip #{clip_data['id']} • {platform.title()}")
+
+        await ch.send(embed=embed)
+    except Exception as e:
+        print(f"[BOT] Share clip error: {e}")
+
+
 @tasks.loop(hours=6)
 async def auto_update_views():
     db = load_db()
@@ -2999,7 +3089,7 @@ async def auto_update_views():
 async def before_update():
     await bot.wait_until_ready()
 
-# ═════════════════════════════════════════════════════��════════════════════════
+# ═════════════════════════════════���═══════════════════��════════════════════════
 # REKAP OTOMATIS MINGGUAN — setiap Senin pagi
 # ═════════════���════════════════════════════════════════════════════════════════
 
