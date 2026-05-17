@@ -1031,11 +1031,10 @@ async def profil(interaction: discord.Interaction, member: discord.Member = None
     clipper = get_clipper(db, str(target.id))
 
     if not clipper:
-        # Cek pending
         pending = get_pending_registration(db, str(target.id))
         if pending:
             accounts_list = format_accounts_list([
-                {"id": a.get("id", i+1), "username": a["username"], "platform": a["platform"]} 
+                {"id": a.get("id", i+1), "username": a["username"], "platform": a["platform"]}
                 for i, a in enumerate(pending.get("accounts", []))
             ])
             return await interaction.response.send_message(
@@ -1050,46 +1049,108 @@ async def profil(interaction: discord.Interaction, member: discord.Member = None
             f"{'Kamu' if not member else target.display_name} belum terdaftar.", ephemeral=True
         )
 
-    clips = [c for c in db["clips"] if c["discord_id"] == str(target.id)]
-    konsisten = calc_konsisten_hadiah(len(clips))
-    warnings = get_warnings(db, str(target.id))
-    bl = db["blacklist"].get(str(target.id))
+    did = str(target.id)
+    clips = [c for c in db["clips"] if c["discord_id"] == did]
+    warnings = get_warnings(db, did)
+    bl = db["blacklist"].get(did)
+    active_tiers = get_active_gaji_tiers(db)
+    active_konsisten = get_active_konsisten_tiers(db)
+    konsisten = calc_konsisten_hadiah(len(clips), db)
 
+    # ── Hitung stats per tier ──────────────────────────────────────────────────
+    tier_counts = {}
+    for c in clips:
+        t = get_tier(c["views"], db)
+        lbl = t["label"]
+        tier_counts[lbl] = tier_counts.get(lbl, 0) + 1
+
+    # ── Stats minggu ini ───────────────────────────────────────────────────────
+    from datetime import timedelta
+    seminggu_lalu = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    clips_minggu = [c for c in clips if c.get("submitted_at", "") >= seminggu_lalu]
+    views_minggu = sum(c["views"] for c in clips_minggu)
+
+    # ── Rata-rata views per clip ───────────────────────────────────────────────
+    avg_views = clipper["total_views"] // max(clipper["total_clips"], 1)
+
+    # ── Ranking global ─────────────────────────────────────────────────────────
+    aktif = sorted(
+        [c for c in db["clippers"].values() if c.get("active", True)],
+        key=lambda x: x["total_views"], reverse=True
+    )
+    rank = next((i+1 for i, c in enumerate(aktif) if c["discord_id"] == did), None)
+
+    # ── Progress bonus konsisten berikutnya ────────────────────────────────────
+    next_konsisten = None
+    for t in sorted(active_konsisten, key=lambda x: x["min_clips"]):
+        if t["min_clips"] > clipper["total_clips"]:
+            next_konsisten = t
+            break
+
+    # ── Build embed ────────────────────────────────────────────────────────────
     embed = discord.Embed(
-        title=f"Profil — {clipper['display_name']}",
+        title=f"{'🚫 ' if bl else ''}👤 Profil — {clipper['display_name']}",
         color=0xED4245 if bl else 0x5865F2,
         timestamp=datetime.now(timezone.utc)
     )
     embed.set_thumbnail(url=target.display_avatar.url)
 
     if bl:
-        embed.add_field(name="Status", value=f"BLACKLIST\n*{bl['alasan']}*", inline=False)
+        embed.add_field(name="🚫 Status", value=f"BLACKLIST\n*{bl['alasan']}*", inline=False)
 
-    # Display all accounts
+    # Akun terdaftar
     accounts = clipper.get("accounts", [])
     accounts_text = format_accounts_list(accounts)
-    embed.add_field(name=f"Akun Terdaftar ({len(accounts)})", value=accounts_text, inline=False)
-    
-    embed.add_field(name="Bergabung", value=clipper["joined_at"][:10], inline=True)
-    embed.add_field(name="Total Clip", value=str(clipper["total_clips"]), inline=True)
-    embed.add_field(name="Total Views", value=fmt_views(clipper["total_views"]), inline=True)
-    embed.add_field(name="Total Gaji", value=fmt_rp(clipper["total_gaji"]), inline=True)
-    embed.add_field(name="Pending", value=fmt_rp(clipper["pending_gaji"]), inline=True)
+    embed.add_field(name=f"📱 Akun ({len(accounts)})", value=accounts_text, inline=False)
 
-    if warnings:
-        embed.add_field(name=f"Warning ({len(warnings)}/{MAX_WARNINGS})",
-                        value="\n".join(f"- {w['alasan'][:40]}" for w in warnings[-3:]), inline=False)
+    # Info dasar
+    embed.add_field(name="📅 Bergabung", value=clipper["joined_at"][:10], inline=True)
+    embed.add_field(name="🏆 Ranking", value=f"#{rank} dari {len(aktif)}" if rank else "-", inline=True)
+    embed.add_field(name="⚠️ Warning", value=f"{len(warnings)}/{MAX_WARNINGS}" if warnings else "Bersih ✅", inline=True)
 
+    # Stats utama
+    embed.add_field(name="🎬 Total Clip", value=str(clipper["total_clips"]), inline=True)
+    embed.add_field(name="👁️ Total Views", value=fmt_views(clipper["total_views"]), inline=True)
+    embed.add_field(name="📊 Rata-rata Views", value=fmt_views(avg_views), inline=True)
+
+    # Gaji
+    embed.add_field(name="💵 Total Gaji", value=fmt_rp(clipper["total_gaji"]), inline=True)
+    embed.add_field(name="⏳ Pending", value=fmt_rp(clipper["pending_gaji"]), inline=True)
+
+    # Minggu ini
+    embed.add_field(
+        name="📈 Minggu Ini",
+        value=f"🎬 {len(clips_minggu)} clip • 👁️ {fmt_views(views_minggu)} views",
+        inline=False
+    )
+
+    # Distribusi tier
+    if tier_counts:
+        tier_txt = " • ".join(f"{lbl}: {n}" for lbl, n in sorted(tier_counts.items(), key=lambda x: x[0]))
+        embed.add_field(name="📊 Distribusi Tier", value=tier_txt, inline=False)
+
+    # Status konsisten
     if konsisten:
-        embed.add_field(name="Status Konsisten",
-                        value=f"{konsisten['label']} (+{fmt_rp(konsisten['hadiah'])})", inline=False)
+        embed.add_field(
+            name="🏅 Bonus Konsisten",
+            value=f"{konsisten['label']} → +{fmt_rp(konsisten['hadiah'])}",
+            inline=False
+        )
+    elif next_konsisten:
+        sisa = next_konsisten["min_clips"] - clipper["total_clips"]
+        embed.add_field(
+            name="🏅 Progress Bonus",
+            value=f"**{sisa} clip lagi** untuk {next_konsisten['label']} (+{fmt_rp(next_konsisten['hadiah'])})",
+            inline=False
+        )
 
+    # 5 clip terakhir
     if clips:
         val = "\n".join(
-            f"#{c['id']} {fmt_views(c['views'])} views - {fmt_rp(c['gaji'])} {'(paid)' if c['gaji_paid'] else '(pending)'}"
-            for c in clips[-3:][::-1]
+            f"#{c['id']} • {fmt_views(c['views'])} views • {fmt_rp(c['gaji'])} {'✅' if c['gaji_paid'] else '⏳'}"
+            for c in clips[-5:][::-1]
         )
-        embed.add_field(name="3 Clip Terakhir", value=val, inline=False)
+        embed.add_field(name="🎬 5 Clip Terakhir", value=val, inline=False)
 
     embed.set_footer(text="Campaign Clipper System")
     await interaction.response.send_message(embed=embed)
@@ -3638,7 +3699,7 @@ async def keluar_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="kick_clipper", description="[ADMIN] Keluarkan clipper dari sistem (bukan blacklist)")
 @app_commands.describe(
-    member="Clipper yang dikeluarkan",
+    discord_id="Discord ID clipper (klik kanan user > Copy User ID) atau nama clipper di database",
     alasan="Alasan dikeluarkan",
     bayar_pending="Tandai gaji pending sebagai sudah dibayar?",
 )
@@ -3646,19 +3707,55 @@ async def keluar_cmd(interaction: discord.Interaction):
     app_commands.Choice(name="Ya (tandai lunas)", value="ya"),
     app_commands.Choice(name="Tidak (pending tetap tercatat)", value="tidak"),
 ])
-async def kick_clipper_cmd(interaction: discord.Interaction, member: discord.Member, alasan: str = "Tidak aktif", bayar_pending: str = "tidak"):
+async def kick_clipper_cmd(
+    interaction: discord.Interaction,
+    discord_id: str,
+    alasan: str = "Tidak aktif",
+    bayar_pending: str = "tidak",
+):
     if not is_admin(interaction.user):
         return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
+
     db = load_db()
-    did = str(member.id)
-    clipper = get_clipper(db, did)
+
+    # Cari clipper by discord_id atau nama
+    did = None
+    clipper = None
+
+    # Coba langsung sebagai ID
+    did_clean = discord_id.strip().replace("<@", "").replace(">", "").replace("!", "")
+    if did_clean.isdigit():
+        clipper = get_clipper(db, did_clean)
+        if clipper:
+            did = did_clean
+
+    # Coba cari by nama kalau tidak ketemu by ID
     if not clipper:
-        return await interaction.response.send_message(f"❌ {member.display_name} tidak terdaftar.", ephemeral=True)
+        for cid, c in db["clippers"].items():
+            if c["display_name"].lower() == discord_id.lower():
+                did = cid
+                clipper = c
+                break
+
+    if not clipper:
+        # Tampilkan daftar clipper untuk bantu admin
+        daftar = "\n".join(
+            f"• **{c['display_name']}** — ID: `{cid}`"
+            for cid, c in list(db["clippers"].items())[:15]
+        )
+        return await interaction.response.send_message(
+            f"❌ Clipper tidak ditemukan dengan ID atau nama `{discord_id}`\n\n"
+            f"**Daftar clipper aktif:**\n{daftar}\n\n"
+            f"Gunakan Discord ID (angka) atau nama persis seperti di atas.",
+            ephemeral=True
+        )
+
     nama = clipper["display_name"]
     total_clips = clipper.get("total_clips", 0)
     total_views = clipper.get("total_views", 0)
     total_gaji = clipper.get("total_gaji", 0)
     pending = clipper.get("pending_gaji", 0)
+
     if bayar_pending == "ya" and pending > 0:
         db["clippers"][did]["total_gaji"] += pending
         db["clippers"][did]["pending_gaji"] = 0
@@ -3670,41 +3767,63 @@ async def kick_clipper_cmd(interaction: discord.Interaction, member: discord.Mem
         })
         total_gaji += pending
         pending = 0
+
     del db["clippers"][did]
     db["pending_registrations"].pop(did, None)
     db["warnings"].pop(did, None)
     db.get("keluar_requests", {}).pop(did, None)
     save_db(db)
-    ch_id = db["settings"].get("clipper_channel_id", 0)
-    if ch_id:
-        ch = interaction.guild.get_channel(ch_id)
-        if ch:
-            try:
-                await ch.set_permissions(member, overwrite=None)
-            except Exception:
-                pass
-    embed = discord.Embed(title="🚪 Clipper Dikeluarkan", color=0xEB459E, timestamp=datetime.now(timezone.utc))
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Clipper", value=member.mention, inline=True)
+
+    # Coba cabut akses channel kalau member masih ada di server
+    member = interaction.guild.get_member(int(did)) if did.isdigit() else None
+    if member:
+        ch_id = db["settings"].get("clipper_channel_id", 0)
+        if ch_id:
+            ch = interaction.guild.get_channel(ch_id)
+            if ch:
+                try:
+                    await ch.set_permissions(member, overwrite=None)
+                except Exception:
+                    pass
+        # Hapus role
+        await remove_clip_role(member, interaction.guild)
+
+    embed = discord.Embed(
+        title="🚪 Clipper Dikeluarkan dari Sistem",
+        color=0xEB459E,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="👤 Nama", value=nama, inline=True)
+    embed.add_field(name="🆔 Discord ID", value=f"`{did}`", inline=True)
     embed.add_field(name="📝 Alasan", value=alasan, inline=True)
     embed.add_field(name="🎬 Clip", value=str(total_clips), inline=True)
     embed.add_field(name="👁️ Views", value=fmt_views(total_views), inline=True)
     embed.add_field(name="💵 Gaji", value=fmt_rp(total_gaji), inline=True)
     if pending > 0:
         embed.add_field(name="⚠️ Pending", value=fmt_rp(pending), inline=True)
-    embed.set_footer(text=f"Oleh {interaction.user.display_name} • Bukan blacklist")
+    elif bayar_pending == "ya":
+        embed.add_field(name="✅ Pending", value="Ditandai lunas", inline=True)
+    embed.set_footer(text=f"Oleh {interaction.user.display_name} • Bukan blacklist, bisa daftar ulang")
     await interaction.response.send_message(embed=embed)
-    try:
-        await member.send(embed=discord.Embed(
-            title="🚪 Kamu Dikeluarkan dari Tim Clipper",
-            description=f"Admin mengeluarkan kamu.\n**Alasan:** {alasan}\n\nKamu bisa daftar kembali kapanpun.",
-            color=0xEB459E
-        ))
-    except Exception:
-        pass
+
+    # DM ke clipper kalau masih di server
+    if member:
+        try:
+            await member.send(embed=discord.Embed(
+                title="🚪 Kamu Dikeluarkan dari Tim Clipper",
+                description=f"Admin mengeluarkan kamu.\n**Alasan:** {alasan}\n\nKamu bisa daftar kembali kapanpun.",
+                color=0xEB459E
+            ))
+        except Exception:
+            pass
+
     await send_log(interaction.guild, db, embed=discord.Embed(
         title="🚪 Admin Kick Clipper",
-        description=f"**Admin:** {interaction.user.mention}\n**Clipper:** {member.mention}\n**Alasan:** {alasan}",
+        description=(
+            f"**Admin:** {interaction.user.mention}\n"
+            f"**Clipper:** {nama} (ID: `{did}`)\n"
+            f"**Alasan:** {alasan}"
+        ),
         color=0xEB459E, timestamp=datetime.now(timezone.utc)
     ))
 
