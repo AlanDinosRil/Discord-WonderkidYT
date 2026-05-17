@@ -792,7 +792,7 @@ async def submit_clip(interaction: discord.Interaction, urls: str):
 
     # ── Kirim ke share channel untuk setiap clip yang berhasil ──────────────────────────
     for r in successful_clips:
-        await _share_clip_to_channel(interaction.guild, db, r["clip_data"], interaction.user, r["result"])
+        await _share_clip_to_channel(interaction.guild, db, r["clip_data"], r["result"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN SUBMIT — Admin submit clip atas nama clipper (bypass verifikasi)
@@ -1950,38 +1950,91 @@ async def blacklist_cmd(interaction: discord.Interaction, member: discord.Member
 @app_commands.describe(member="Clipper yang mau dicabut blacklist-nya")
 async def unblacklist_cmd(interaction: discord.Interaction, member: discord.Member):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("Hanya admin.", ephemeral=True)
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
     db = load_db()
+
+    # Cek apakah memang di-blacklist
+    if not is_blacklisted(db, str(member.id)):
+        return await interaction.response.send_message(
+            f"⚠️ {member.mention} tidak ada di daftar blacklist.", ephemeral=True
+        )
+
     unblacklist_clipper(db, str(member.id))
 
-    # Kembalikan role dan akses channel
-    await give_clip_role(member, interaction.guild)
-    
+    notes = []
+
+    # Kembalikan role
+    role_ok, role_msg = await give_clip_role(member, interaction.guild)
+    if not role_ok:
+        notes.append(f"⚠️ Role gagal diberikan: {role_msg}")
+
+    # Kembalikan akses channel
     ch_id = db["settings"].get("clipper_channel_id", 0)
     if ch_id:
         ch = interaction.guild.get_channel(ch_id)
         if ch:
             try:
                 await ch.set_permissions(member, read_messages=True, send_messages=True)
-            except Exception:
-                pass
+            except Exception as e:
+                notes.append(f"⚠️ Akses channel gagal: {e}")
 
-    await interaction.response.send_message(
-        embed=discord.Embed(
-            title="Blacklist Dicabut",
-            description=f"{member.mention} bisa aktif kembali sebagai clipper.",
-            color=0x57F287
-        )
+    embed = discord.Embed(
+        title="✅ Blacklist Dicabut",
+        description=f"{member.mention} bisa aktif kembali sebagai clipper.",
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc)
     )
+    if notes:
+        embed.add_field(name="⚠️ Catatan", value="\n".join(notes), inline=False)
+    embed.set_footer(text=f"Dicabut oleh {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+    await send_log(interaction.guild, db, embed=discord.Embed(
+        title="✅ Blacklist Dicabut",
+        description=f"**Admin:** {interaction.user.mention}\n**Clipper:** {member.mention}",
+        color=0x57F287, timestamp=datetime.now(timezone.utc)
+    ))
+
+    try:
+        await member.send(embed=discord.Embed(
+            title="✅ Blacklist Kamu Dicabut",
+            description="Admin telah mencabut blacklist kamu. Kamu bisa aktif kembali sebagai clipper!",
+            color=0x57F287
+        ))
+    except Exception:
+        pass
 
 @bot.tree.command(name="hapus_warning", description="[ADMIN] Hapus semua warning clipper")
 @app_commands.describe(member="Clipper yang warningnya dihapus")
 async def hapus_warning_cmd(interaction: discord.Interaction, member: discord.Member):
     if not is_admin(interaction.user):
-        return await interaction.response.send_message("Hanya admin.", ephemeral=True)
+        return await interaction.response.send_message("❌ Hanya admin.", ephemeral=True)
     db = load_db()
+    warnings = get_warnings(db, str(member.id))
+    if not warnings:
+        return await interaction.response.send_message(
+            f"⚠️ {member.mention} tidak punya warning.", ephemeral=True
+        )
+    jumlah = len(warnings)
     clear_warnings(db, str(member.id))
-    await interaction.response.send_message(f"Semua warning {member.mention} dihapus.", ephemeral=True)
+
+    embed = discord.Embed(
+        title="🗑️ Warning Dihapus",
+        description=f"**{jumlah} warning** {member.mention} telah dihapus.",
+        color=0x57F287,
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_footer(text=f"Oleh {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+    try:
+        await member.send(embed=discord.Embed(
+            title="✅ Warning Kamu Dihapus",
+            description=f"Admin menghapus semua **{jumlah} warning** kamu. Rekam jejakmu bersih kembali!",
+            color=0x57F287
+        ))
+    except Exception:
+        pass
 
 # ═�����════════════════════════════════════════════════════════════════════════════
 # EDIT CLIPPER — Admin only untuk edit akun
@@ -3107,7 +3160,7 @@ async def check_milestone(clip: dict, old_views: int, new_views: int, guild: dis
 # AUTO UPDATE VIEWS — setiap 6 jam + cek milestone
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _share_clip_to_channel(guild, db: dict, clip_data: dict, submitter, result: dict):
+async def _share_clip_to_channel(guild, db: dict, clip_data: dict, result: dict):
     """Kirim pengumuman clip baru ke share_channel."""
     share_ch_id = db["settings"].get("share_channel_id", 0)
     if not share_ch_id:
@@ -3123,19 +3176,28 @@ async def _share_clip_to_channel(guild, db: dict, clip_data: dict, submitter, re
         tier = get_tier(views, db)
 
         embed = discord.Embed(
-            title=f"{p_icon} Clip Baru dari {clip_data['clipper_name']}!",
+            title=f"{p_icon} Clip Baru — {clip_data['clipper_name']}",
             color=0x00C9A7,
             timestamp=datetime.now(timezone.utc)
         )
         if result.get("thumbnail"):
             embed.set_thumbnail(url=result["thumbnail"])
+
         embed.add_field(
             name="🎬 Judul",
             value=result.get("title", clip_data.get("title", "Unknown"))[:80],
             inline=False
         )
-        embed.add_field(name="👤 Clipper", value=f"@{clip_data.get('account_username', clip_data['clipper_name'])}", inline=True)
-        embed.add_field(name="👁️ Views", value=fmt_views(views) if views > 0 else "Sedang dihitung...", inline=True)
+        embed.add_field(
+            name="👤 Clipper",
+            value=f"@{clip_data.get('account_username', clip_data['clipper_name'])}",
+            inline=True
+        )
+        embed.add_field(
+            name="👁️ Views",
+            value=fmt_views(views) if views > 0 else "Sedang dihitung...",
+            inline=True
+        )
         embed.add_field(name=f"{tier['emoji']} Tier", value=tier["label"], inline=True)
         embed.add_field(name="🔗 Link", value=clip_data["url"], inline=False)
         if gaji > 0:
